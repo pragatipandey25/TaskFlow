@@ -122,7 +122,7 @@ All error responses adhere to a uniform structure:
     "success": true,
     "data": {
       "id": "672bd8a123f1a00192e4b101",
-      "username": "lead_engineer",
+      "name": "lead_engineer",
       "email": "engineer@taskflow.dev",
       "role": "developer",
       "isActive": true,
@@ -131,6 +131,56 @@ All error responses adhere to a uniform structure:
   }
   ```
 - **Error Codes**: `401 Unauthorized` (missing/expired token).
+
+---
+
+### 2.4 Rotate Refresh Token
+- **Route**: `POST /api/auth/refresh`
+- **Auth**: Public (requires valid HttpOnly cookie `refreshToken` or JSON body `{ "refreshToken": "<token>" }`)
+- **Description**: Performs cryptographically secure refresh token rotation and breach/reuse detection. Issues a fresh Access Token (15m) and new Refresh Token (7d).
+- **Request Body** (optional if HttpOnly cookie present):
+  ```json
+  {
+    "refreshToken": "4x_9B3..."
+  }
+  ```
+- **Response `200 OK`**:
+  ```json
+  {
+    "success": true,
+    "data": {
+      "user": {
+        "id": "672bd8a123f1a00192e4b101",
+        "name": "lead_engineer",
+        "email": "engineer@taskflow.dev",
+        "role": "developer"
+      },
+      "tokens": {
+        "accessToken": "eyJhbGciOiJIUzI1Ni...",
+        "expiresIn": 900,
+        "refreshToken": "8y_1A2..."
+      }
+    },
+    "message": "Token refreshed successfully"
+  }
+  ```
+- **Error Codes**: `401 Unauthorized` (expired token, missing token, or token reuse detected).
+
+---
+
+### 2.5 Logout & Revoke Session
+- **Route**: `POST /api/auth/logout`
+- **Auth**: Optional Bearer Token or Refresh Token
+- **Description**: Invalidates the active refresh token family and clears the `refreshToken` cookie.
+- **Response `200 OK`**:
+  ```json
+  {
+    "success": true,
+    "data": {
+      "message": "Successfully logged out and session revoked"
+    }
+  }
+  ```
 
 ---
 

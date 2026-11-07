@@ -7,7 +7,32 @@ export const apiClient = axios.create({
   headers: {
     'Content-Type': 'application/json',
   },
+  withCredentials: true, // Send and receive HttpOnly cookies
   timeout: 10000,
+});
+
+// In-memory access token storage
+let currentAccessToken: string | null = localStorage.getItem('tf_access_token');
+
+export function setApiAccessToken(token: string | null): void {
+  currentAccessToken = token;
+  if (token) {
+    localStorage.setItem('tf_access_token', token);
+  } else {
+    localStorage.removeItem('tf_access_token');
+  }
+}
+
+export function getApiAccessToken(): string | null {
+  return currentAccessToken;
+}
+
+// Request interceptor to attach Bearer token
+apiClient.interceptors.request.use((config) => {
+  if (currentAccessToken && config.headers) {
+    config.headers.Authorization = `Bearer ${currentAccessToken}`;
+  }
+  return config;
 });
 
 // Response interceptor for consistent error extraction

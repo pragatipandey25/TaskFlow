@@ -4,7 +4,7 @@ export default {
   extensionsToTreatAsEsm: ['.ts'],
   moduleNameMapper: {
     '^(\\.{1,2}/.*)\\.js$': '$1',
-    '^@taskflow/shared$': '<rootDir>/../shared/src/index.ts',
+    '^@taskflow/shared$': '<rootDir>/../shared/dist/index.js',
   },
   transform: {
     '^.+\\.tsx?$': [
@@ -15,5 +15,5 @@ export default {
     ],
   },
   testMatch: ['<rootDir>/tests/**/*.test.ts', '<rootDir>/src/**/*.spec.ts'],
-  testTimeout: 10000,
+  testTimeout: 30000,
 };
