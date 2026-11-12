@@ -65,6 +65,12 @@ describe('Shared Core Types & Enums', () => {
       expect(hasRequiredRole(UserRole.VIEWER, UserRole.ADMIN)).toBe(false);
       expect(hasRequiredRole(UserRole.VIEWER, UserRole.DEVELOPER)).toBe(false);
       expect(hasRequiredRole(UserRole.VIEWER, UserRole.VIEWER)).toBe(true);
+
+      // Malformed or unexpected roles should strictly evaluate to false
+      expect(hasRequiredRole('superadmin' as UserRole, UserRole.DEVELOPER)).toBe(false);
+      expect(hasRequiredRole(UserRole.ADMIN, 'superadmin' as UserRole)).toBe(false);
+      expect(hasRequiredRole('' as UserRole, UserRole.VIEWER)).toBe(false);
+      expect(hasRequiredRole(undefined as unknown as UserRole, UserRole.VIEWER)).toBe(false);
     });
   });
 });

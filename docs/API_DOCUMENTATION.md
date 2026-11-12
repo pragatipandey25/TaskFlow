@@ -184,6 +184,36 @@ All error responses adhere to a uniform structure:
 
 ---
 
+### 2.6 Update User Role (Admin Only)
+- **Route**: `PATCH /api/auth/users/:id/role`
+- **Auth**: Bearer Token required (`admin` only)
+- **Description**: Promotes or demotes an existing user's role (`admin`, `developer`, `viewer`).
+- **Request Body**:
+  ```json
+  {
+    "role": "admin"
+  }
+  ```
+- **Response `200 OK`**:
+  ```json
+  {
+    "success": true,
+    "data": {
+      "id": "672bd8a123f1a00192e4b101",
+      "name": "Jane Doe",
+      "email": "jane@taskflow.dev",
+      "role": "admin",
+      "isActive": true,
+      "createdAt": "2026-11-06T20:00:00.000Z",
+      "updatedAt": "2026-11-12T12:00:00.000Z"
+    },
+    "message": "User role updated successfully"
+  }
+  ```
+- **Error Codes**: `400 Bad Request` (invalid role), `401 Unauthorized` (missing token), `403 Forbidden` (non-admin caller), `404 Not Found` (user not found).
+
+---
+
 ## 3. Job Management Endpoints
 
 ### 3.1 Submit a Job

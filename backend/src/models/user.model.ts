@@ -3,8 +3,12 @@ import bcrypt from 'bcrypt';
 import { UserRole, UserProfileResponse } from '@taskflow/shared';
 import { env } from '../config/env.config.js';
 
-// Use fast salt rounds in automated test suites for sub-millisecond execution
-const BCRYPT_SALT_ROUNDS = env.NODE_ENV === 'test' ? 4 : 12;
+// Use fast salt rounds in automated test suites for sub-millisecond execution; 12 in dev/production
+export const BCRYPT_SALT_ROUNDS = env.NODE_ENV === 'test' ? 4 : 12;
+
+export function getBcryptRounds(nodeEnv: string = env.NODE_ENV): number {
+  return nodeEnv === 'test' ? 4 : 12;
+}
 
 export interface IUser extends Document {
   _id: Types.ObjectId;

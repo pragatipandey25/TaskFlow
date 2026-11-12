@@ -23,7 +23,6 @@ export const registerSchema = z.object({
       PASSWORD_REGEX,
       'Password must contain at least one uppercase letter, one lowercase letter, one number, and one special character'
     ),
-  role: z.nativeEnum(UserRole).optional().default(UserRole.DEVELOPER),
 });
 
 export const loginSchema = z.object({
@@ -41,6 +40,13 @@ export const refreshTokenSchema = z.object({
   refreshToken: z.string().optional(),
 });
 
+export const updateRoleSchema = z.object({
+  role: z.nativeEnum(UserRole, {
+    errorMap: () => ({ message: 'Invalid role. Must be one of: admin, developer, viewer' }),
+  }),
+});
+
 export type RegisterSchema = z.infer<typeof registerSchema>;
 export type LoginSchema = z.infer<typeof loginSchema>;
 export type RefreshTokenSchema = z.infer<typeof refreshTokenSchema>;
+export type UpdateRoleSchema = z.infer<typeof updateRoleSchema>;

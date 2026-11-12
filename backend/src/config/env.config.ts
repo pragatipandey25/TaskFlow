@@ -35,7 +35,35 @@ const envSchema = z.object({
   JWT_REFRESH_EXPIRES_IN: z.string().default('7d'),
   CORS_ORIGIN: z.string().default('http://localhost:5173'),
   LOG_LEVEL: z.enum(['error', 'warn', 'info', 'http', 'verbose', 'debug', 'silly']).default('info'),
-});
+}).refine(
+  (data) => {
+    if (data.NODE_ENV === 'production') {
+      return (
+        data.JWT_SECRET !== 'taskflow_default_development_secret_key_12345' &&
+        data.JWT_SECRET.length >= 32
+      );
+    }
+    return true;
+  },
+  {
+    message: 'In production, JWT_SECRET must be explicitly configured and at least 32 characters long',
+    path: ['JWT_SECRET'],
+  }
+).refine(
+  (data) => {
+    if (data.NODE_ENV === 'production') {
+      return (
+        data.JWT_REFRESH_SECRET !== 'taskflow_default_development_refresh_key_12345' &&
+        data.JWT_REFRESH_SECRET.length >= 32
+      );
+    }
+    return true;
+  },
+  {
+    message: 'In production, JWT_REFRESH_SECRET must be explicitly configured and at least 32 characters long',
+    path: ['JWT_REFRESH_SECRET'],
+  }
+);
 
 export type EnvConfig = z.infer<typeof envSchema>;
 

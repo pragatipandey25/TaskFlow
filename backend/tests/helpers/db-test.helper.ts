@@ -1,8 +1,8 @@
 import mongoose from 'mongoose';
-import { MongoMemoryServer } from 'mongodb-memory-server';
+import { MongoMemoryReplSet } from 'mongodb-memory-server';
 import fs from 'fs';
 
-let mongoServer: MongoMemoryServer | null = null;
+let mongoReplSet: MongoMemoryReplSet | null = null;
 
 const SYSTEM_MONGOD_PATH = 'C:\\Program Files\\MongoDB\\Server\\8.3\\bin\\mongod.exe';
 
@@ -15,11 +15,12 @@ export async function setupTestDatabase(): Promise<void> {
     ? { systemBinary: SYSTEM_MONGOD_PATH }
     : undefined;
 
-  mongoServer = await MongoMemoryServer.create({
+  mongoReplSet = await MongoMemoryReplSet.create({
+    replSet: { count: 1, storageEngine: 'wiredTiger' },
     binary: binaryOptions,
   });
 
-  const uri = mongoServer.getUri();
+  const uri = mongoReplSet.getUri();
   await mongoose.connect(uri);
 }
 
@@ -36,8 +37,8 @@ export async function teardownTestDatabase(): Promise<void> {
   if (mongoose.connection.readyState !== 0) {
     await mongoose.disconnect();
   }
-  if (mongoServer) {
-    await mongoServer.stop();
-    mongoServer = null;
+  if (mongoReplSet) {
+    await mongoReplSet.stop();
+    mongoReplSet = null;
   }
 }

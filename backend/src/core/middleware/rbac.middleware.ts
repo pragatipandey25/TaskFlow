@@ -7,8 +7,12 @@ import { ForbiddenError, UnauthorizedError } from '../errors/app-error.js';
  */
 export function requireRole(...allowedRoles: UserRole[]) {
   return (req: Request, _res: Response, next: NextFunction): void => {
-    if (!req.user) {
+    if (!req.user || !req.user.role) {
       throw new UnauthorizedError('Authentication required prior to authorization check');
+    }
+
+    if (!Object.values(UserRole).includes(req.user.role)) {
+      throw new ForbiddenError(`Access forbidden: unrecognized user role '${req.user.role}'`);
     }
 
     if (!allowedRoles.includes(req.user.role)) {
@@ -27,8 +31,12 @@ export function requireRole(...allowedRoles: UserRole[]) {
  */
 export function requireMinimumRole(minRole: UserRole) {
   return (req: Request, _res: Response, next: NextFunction): void => {
-    if (!req.user) {
+    if (!req.user || !req.user.role) {
       throw new UnauthorizedError('Authentication required prior to authorization check');
+    }
+
+    if (!Object.values(UserRole).includes(req.user.role)) {
+      throw new ForbiddenError(`Access forbidden: unrecognized user role '${req.user.role}'`);
     }
 
     if (!hasRequiredRole(req.user.role, minRole)) {

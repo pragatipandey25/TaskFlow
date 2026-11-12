@@ -14,5 +14,10 @@ export const ROLE_HIERARCHY: Record<UserRole, number> = {
 };
 
 export function hasRequiredRole(userRole: UserRole, requiredRole: UserRole): boolean {
-  return ROLE_HIERARCHY[userRole] >= ROLE_HIERARCHY[requiredRole];
+  const userLevel = ROLE_HIERARCHY[userRole];
+  const requiredLevel = ROLE_HIERARCHY[requiredRole];
+  if (typeof userLevel !== 'number' || typeof requiredLevel !== 'number') {
+    return false;
+  }
+  return userLevel >= requiredLevel;
 }
