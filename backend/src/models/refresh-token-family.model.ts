@@ -37,7 +37,6 @@ const RefreshTokenFamilySchema = new Schema<IRefreshTokenFamily>(
     expiresAt: {
       type: Date,
       required: true,
-      index: true,
     },
   },
   {

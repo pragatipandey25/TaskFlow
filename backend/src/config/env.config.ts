@@ -35,6 +35,35 @@ const envSchema = z.object({
   JWT_REFRESH_EXPIRES_IN: z.string().default('7d'),
   CORS_ORIGIN: z.string().default('http://localhost:5173'),
   LOG_LEVEL: z.enum(['error', 'warn', 'info', 'http', 'verbose', 'debug', 'silly']).default('info'),
+  DEFAULT_QUEUE_NAME: z.string().default('default'),
+  WORKER_CONCURRENCY: z
+    .string()
+    .default('5')
+    .transform((val) => parseInt(val, 10))
+    .refine((val) => !isNaN(val) && val > 0, {
+      message: 'WORKER_CONCURRENCY must be a positive integer',
+    }),
+  WORKER_LOCK_DURATION_MS: z
+    .string()
+    .default('30000')
+    .transform((val) => parseInt(val, 10))
+    .refine((val) => !isNaN(val) && val >= 5000, {
+      message: 'WORKER_LOCK_DURATION_MS must be at least 5000ms',
+    }),
+  WORKER_STALLED_INTERVAL_MS: z
+    .string()
+    .default('15000')
+    .transform((val) => parseInt(val, 10))
+    .refine((val) => !isNaN(val) && val >= 5000, {
+      message: 'WORKER_STALLED_INTERVAL_MS must be at least 5000ms',
+    }),
+  WORKER_MAX_STALLED_COUNT: z
+    .string()
+    .default('2')
+    .transform((val) => parseInt(val, 10))
+    .refine((val) => !isNaN(val) && val >= 1, {
+      message: 'WORKER_MAX_STALLED_COUNT must be at least 1',
+    }),
 }).refine(
   (data) => {
     if (data.NODE_ENV === 'production') {

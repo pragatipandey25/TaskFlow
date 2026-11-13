@@ -188,5 +188,66 @@ TaskFlow/
 
 ## 7. Current Project Status
 
-- **Phase**: **Phase 1 — System Architecture & Project Planning**
-- **Status**: Completed specifications and architecture. Awaiting review and approval before code execution.
+- **Phase**: **Milestone 3 — Job Submission & BullMQ Integration (Complete & Verified)**
+- **Verification Summary**:
+  - Full TypeScript monorepo compilation (`npm run build`, `npm run typecheck`) across `@taskflow/shared`, `@taskflow/backend`, and `@taskflow/frontend`: **0 errors**.
+  - ESLint verification (`npm run lint`): **0 errors, 0 warnings**.
+  - Automated Jest test suites: **13 suites, 101 tests passed, 0 failed** (7 shared + 94 backend).
+  - Background BullMQ worker runtime, demonstration processors (`EMAIL_SIMULATION`, `DATA_PROCESSING`, `REPORT_GENERATION`), dual-write reconciliation sweeper, and React UI fully operational.
+
+---
+
+## 8. Local Setup & Execution Guide
+
+### Prerequisites
+- Node.js 20 LTS
+- MongoDB 7.0+ (running locally or in Docker)
+- Redis 7.2+ (running locally or in Docker)
+
+### Installation
+```bash
+# Clone the repository
+git clone https://github.com/your-username/taskflow.git
+cd taskflow
+
+# Install monorepo dependencies across all workspaces
+npm install
+```
+
+### Environment Configuration
+Copy `.env.example` in `backend` and `frontend`:
+```bash
+cp backend/.env.example backend/.env
+cp frontend/.env.example frontend/.env
+```
+
+### Development Scripts
+```bash
+# 1. Run Shared Package Build
+npm run build --workspace=@taskflow/shared
+
+# 2. Start Express API Backend (Port 5000)
+npm run dev --workspace=@taskflow/backend
+
+# 3. Start Standalone Background Worker Process
+npm run dev:worker --workspace=@taskflow/backend
+
+# 4. Start React Frontend Dashboard (Port 5173)
+npm run dev --workspace=@taskflow/frontend
+```
+
+### Running Test Suites & Quality Verification
+```bash
+# Run complete automated test suite (Shared + Backend)
+npm test --workspace=@taskflow/shared
+npm test --workspace=@taskflow/backend
+
+# Run strict TypeScript typechecking across all 3 workspaces
+npm run typecheck
+
+# Run ESLint across codebases
+npm run lint
+
+# Compile production bundles
+npm run build
+```

@@ -5,6 +5,7 @@
 export enum JobStatus {
   PENDING = 'PENDING',
   QUEUED = 'QUEUED',
+  DELAYED = 'DELAYED',
   PROCESSING = 'PROCESSING',
   COMPLETED = 'COMPLETED',
   FAILED = 'FAILED',
@@ -17,7 +18,8 @@ export enum JobStatus {
  * Valid transitions for the TaskFlow Job Finite State Machine.
  */
 export const VALID_JOB_TRANSITIONS: Record<JobStatus, readonly JobStatus[]> = {
-  [JobStatus.PENDING]: [JobStatus.QUEUED, JobStatus.CANCELLED, JobStatus.FAILED],
+  [JobStatus.PENDING]: [JobStatus.QUEUED, JobStatus.DELAYED, JobStatus.CANCELLED, JobStatus.FAILED],
+  [JobStatus.DELAYED]: [JobStatus.QUEUED, JobStatus.CANCELLED],
   [JobStatus.QUEUED]: [JobStatus.PROCESSING, JobStatus.CANCELLED],
   [JobStatus.PROCESSING]: [
     JobStatus.COMPLETED,
@@ -26,7 +28,7 @@ export const VALID_JOB_TRANSITIONS: Record<JobStatus, readonly JobStatus[]> = {
     JobStatus.CANCELLED,
     JobStatus.FAILED,
   ],
-  [JobStatus.RETRYING]: [JobStatus.QUEUED, JobStatus.PROCESSING, JobStatus.CANCELLED],
+  [JobStatus.RETRYING]: [JobStatus.QUEUED, JobStatus.PROCESSING, JobStatus.CANCELLED, JobStatus.DEAD_LETTER],
   [JobStatus.DEAD_LETTER]: [JobStatus.QUEUED], // Allow manual redrive
   [JobStatus.COMPLETED]: [],
   [JobStatus.CANCELLED]: [],
@@ -34,5 +36,5 @@ export const VALID_JOB_TRANSITIONS: Record<JobStatus, readonly JobStatus[]> = {
 } as const;
 
 export function isValidJobTransition(from: JobStatus, to: JobStatus): boolean {
-  return VALID_JOB_TRANSITIONS[from].includes(to);
+  return VALID_JOB_TRANSITIONS[from]?.includes(to) ?? false;
 }

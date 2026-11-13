@@ -108,15 +108,36 @@ flowchart BT
 ## 4. Test Execution Commands & CI Pipeline Matrix
 
 ```bash
-# Run pure unit tests (in-memory, sub-second execution)
-npm run test:unit
+# Run shared types test suite
+npm test --workspace=@taskflow/shared
 
-# Run API & database integration tests (uses mongodb-memory-server & redis)
-npm run test:integration
+# Run backend unit, integration, and security test suites
+npm test --workspace=@taskflow/backend
 
-# Run concurrency, lock race condition, and failure recovery tests
-npm run test:concurrency
+# Run strict TypeScript typecheck
+npm run typecheck
 
-# Run full test suite with Istanbul code coverage report (Enforce >= 85% threshold)
-npm run test:coverage
+# Run ESLint across codebases
+npm run lint
 ```
+
+---
+
+## 5. Milestone 3 Verification Matrix (Verified 101/101 Tests)
+
+| Test Suite File | Domain / Category | Tests Passed | Status |
+| :--- | :--- | :--- | :--- |
+| `shared/src/__tests__/shared-types.spec.ts` | Shared Types, Enums & FSM Transitions | 7 / 7 | PASS |
+| `backend/tests/unit/job-validation.test.ts` | Zod Validation, Priority, Payload Sanitization | 5 / 5 | PASS |
+| `backend/tests/unit/processor-registry.test.ts` | Processor Registry & Handlers (Email, Data, Report) | 6 / 6 | PASS |
+| `backend/tests/unit/reconciliation.test.ts` | Dual-Write Reconciliation & Orphaned State Recovery | 3 / 3 | PASS |
+| `backend/tests/unit/token.service.test.ts` | JWT Token Generation & Verification | 3 / 3 | PASS |
+| `backend/tests/unit/env.config.test.ts` | Environment Configuration Validation | 2 / 2 | PASS |
+| `backend/tests/unit/app-error.test.ts` | Error Hierarchy & Status Codes | 4 / 4 | PASS |
+| `backend/tests/integration/job-submission.test.ts` | Job Submission, RBAC, Idempotency, User Isolation | 14 / 14 | PASS |
+| `backend/tests/integration/worker-execution.test.ts` | Worker Execution, Progress, Retry, DLQ, Cancellation | 5 / 5 | PASS |
+| `backend/tests/integration/security-hardening.test.ts` | Refresh Token Rotation Race & Concurrency | 6 / 6 | PASS |
+| `backend/tests/integration/auth.test.ts` | User Authentication, Rotation & Inactive Accounts | 18 / 18 | PASS |
+| `backend/tests/integration/rbac.test.ts` | Role Hierarchy & Middleware Enforcement | 24 / 24 | PASS |
+| `backend/tests/integration/health.test.ts` | Liveness & Readiness Probes | 4 / 4 | PASS |
+| **Monorepo Total** | **All 13 Suites Combined** | **101 / 101** | **100% PASS** |

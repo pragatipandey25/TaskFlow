@@ -12,13 +12,15 @@ export interface JobPayload<T = Record<string, unknown>> {
 }
 
 export interface CreateJobInput {
-  queueName: string;
+  queueName?: string;
   name: string;
   type: string;
   payload: Record<string, unknown>;
   priority?: JobPriority | number;
   maxRetries?: number;
+  maxAttempts?: number;
   backoffPolicy?: BackoffConfig;
+  backoff?: BackoffConfig;
   delayMs?: number;
   tags?: string[];
   idempotencyKey?: string;

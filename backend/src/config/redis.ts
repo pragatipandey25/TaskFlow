@@ -63,6 +63,33 @@ export async function checkRedisHealth(): Promise<{
   }
 }
 
+export function getRedisConnectionOptions() {
+  return {
+    host: env.REDIS_HOST,
+    port: env.REDIS_PORT,
+    password: env.REDIS_PASSWORD || undefined,
+    maxRetriesPerRequest: null,
+    enableReadyCheck: false,
+    retryStrategy(times: number) {
+      const delay = Math.min(times * 200, 3000);
+      return delay;
+    },
+  };
+}
+
+export function createRedisConnection(): Redis {
+  const client = new Redis({
+    ...getRedisConnectionOptions(),
+    lazyConnect: true,
+  });
+
+  client.on('error', (err) => {
+    logger.error('Isolated Redis client error:', err);
+  });
+
+  return client;
+}
+
 export async function disconnectRedis(): Promise<void> {
   if (redisClient) {
     await redisClient.quit();

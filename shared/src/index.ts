@@ -1,6 +1,7 @@
 // Enums
 export * from './enums/job-status.enum.js';
 export * from './enums/job-priority.enum.js';
+export * from './enums/job-type.enum.js';
 export * from './enums/user-role.enum.js';
 export * from './enums/worker-status.enum.js';
 

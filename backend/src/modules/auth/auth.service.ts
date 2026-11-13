@@ -5,49 +5,83 @@ import { UserModel, hashPassword } from '../../models/user.model.js';
 import { RefreshTokenModel } from '../../models/refresh-token.model.js';
 import { RefreshTokenFamilyModel } from '../../models/refresh-token-family.model.js';
 import { TokenService } from './token.service.js';
-import { ConflictError, UnauthorizedError, NotFoundError } from '../../core/errors/app-error.js';
+import { AppError, ConflictError, UnauthorizedError, NotFoundError } from '../../core/errors/app-error.js';
 import { logger } from '../../core/logging/logger.js';
 
 export class AuthService {
   /**
    * Helper that executes an operation inside a MongoDB transaction if the deployment supports it (replica set),
    * or falls back to atomic operations with concurrency guards if running on standalone MongoDB.
+   * Handles WriteConflict errors with automatic exponential backoff retry.
    */
   private static async runInTransactionOrFallback<T>(
     operation: (session?: mongoose.ClientSession) => Promise<T>
   ): Promise<T> {
-    if (mongoose.connection.readyState === 1) {
-      let session: mongoose.ClientSession | null = null;
-      try {
-        session = await mongoose.startSession();
-        if (session) {
-          session.startTransaction();
-          const result = await operation(session);
-          await session.commitTransaction();
-          return result;
-        }
-      } catch (err: any) {
-        if (session && session.inTransaction()) {
-          try {
-            await session.abortTransaction();
-          } catch (_) {
-            // ignore abort error
+    const maxRetries = 2;
+
+    for (let attempt = 0; attempt <= maxRetries; attempt++) {
+      if (mongoose.connection.readyState === 1) {
+        let session: mongoose.ClientSession | null = null;
+        try {
+          session = await mongoose.startSession();
+          if (session) {
+            session.startTransaction();
+            const result = await operation(session);
+            // If operation succeeded and transaction is still open, commit it
+            if (session.inTransaction()) {
+              await session.commitTransaction();
+            }
+            return result;
           }
-        }
-        // If MongoDB deployment is a standalone mongod without replica set, fallback cleanly
-        if (
-          err?.message?.includes('Transaction numbers are only allowed') ||
-          err?.message?.includes('replica set')
-        ) {
-          logger.warn(
-            'MongoDB deployment does not support replica set transactions; falling back to atomic concurrency guards'
-          );
-          return operation(undefined);
-        }
-        throw err;
-      } finally {
-        if (session) {
-          await session.endSession();
+        } catch (err: unknown) {
+          const error = err as Error & { errorLabels?: string[] };
+          if (session && session.inTransaction()) {
+            try {
+              await session.abortTransaction();
+            } catch (_) {
+              // ignore abort failure
+            }
+          }
+
+          // If MongoDB deployment is a standalone mongod without replica set, fallback cleanly
+          if (
+            error?.message?.includes('Transaction numbers are only allowed') ||
+            error?.message?.includes('replica set')
+          ) {
+            logger.warn(
+              'MongoDB deployment does not support replica set transactions; falling back to atomic concurrency guards'
+            );
+            return operation(undefined);
+          }
+
+          // Detect write conflicts during concurrent requests
+          const isWriteConflict =
+            Boolean(error?.errorLabels?.includes('TransientTransactionError')) ||
+            Boolean(error?.message?.includes('WriteConflict'));
+
+          if (isWriteConflict && attempt < maxRetries) {
+            logger.warn(
+              `Write conflict encountered in refresh transaction; retrying attempt ${attempt + 1}...`
+            );
+            await new Promise((r) => setTimeout(r, 20 * (attempt + 1)));
+            continue;
+          }
+
+          // If the error was already an operational AppError, rethrow directly
+          if (err instanceof AppError) {
+            throw err;
+          }
+
+          // Handle unresolved write conflicts as an authentication concurrency conflict (401)
+          if (isWriteConflict) {
+            throw new UnauthorizedError('Invalid or expired refresh token. Concurrency conflict.');
+          }
+
+          throw err;
+        } finally {
+          if (session) {
+            await session.endSession();
+          }
         }
       }
     }
@@ -225,6 +259,12 @@ export class AuthService {
             { $set: { isRevoked: true } },
             { session }
           );
+
+          // Crucial: Commit the transaction so the breach revocation is permanently persisted!
+          if (session && session.inTransaction()) {
+            await session.commitTransaction();
+          }
+
           throw new UnauthorizedError('Invalid refresh token. Token reuse detected. Please log in again.');
         }
 
@@ -248,6 +288,11 @@ export class AuthService {
           { $set: { isRevoked: true } },
           { session }
         );
+
+        if (session && session.inTransaction()) {
+          await session.commitTransaction();
+        }
+
         throw new UnauthorizedError('Invalid refresh token. Token family has been revoked. Please log in again.');
       }
 
@@ -284,6 +329,11 @@ export class AuthService {
           { $set: { isRevoked: true } },
           { session }
         );
+
+        if (session && session.inTransaction()) {
+          await session.commitTransaction();
+        }
+
         throw new UnauthorizedError('Invalid refresh token. Token family has been revoked. Please log in again.');
       }
 

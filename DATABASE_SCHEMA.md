@@ -211,6 +211,7 @@ import { Schema, model, Document, Types } from 'mongoose';
 export enum JobStatus {
   PENDING = 'PENDING',
   QUEUED = 'QUEUED',
+  DELAYED = 'DELAYED',
   PROCESSING = 'PROCESSING',
   COMPLETED = 'COMPLETED',
   FAILED = 'FAILED',

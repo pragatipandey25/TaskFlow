@@ -2,11 +2,14 @@ import { env } from './config/env.config.js';
 import { logger } from './core/logging/logger.js';
 import { connectDatabase, disconnectDatabase } from './config/database.js';
 import { disconnectRedis } from './config/redis.js';
+import { registerDefaultProcessors } from './core/worker/register-processors.js';
+import { workerManager } from './core/worker/worker-manager.js';
+import { jobReconciliationService } from './core/queue/reconciliation.service.js';
 
 /**
  * TaskFlow Background Worker Process Entrypoint
  * This process executes independently of the Express HTTP server,
- * consuming jobs from BullMQ Redis queues.
+ * consuming jobs from BullMQ Redis queues with concurrent processing.
  */
 async function startWorker(): Promise<void> {
   logger.info(`Starting TaskFlow Worker Process [PID: ${process.pid}] in ${env.NODE_ENV} mode...`);
@@ -19,11 +22,23 @@ async function startWorker(): Promise<void> {
     process.exit(1);
   }
 
-  logger.info(`Worker runtime initialized. Ready for queue worker registrations (Milestone 4).`);
+  // Register built-in demonstration job handlers
+  registerDefaultProcessors();
+
+  // Initialize and start the BullMQ worker instance
+  workerManager.startWorker(env.DEFAULT_QUEUE_NAME);
+  logger.info(
+    `Worker runtime initialized [WorkerID: ${workerManager.getWorkerId()}]. Listening on queue '${env.DEFAULT_QUEUE_NAME}' with concurrency ${env.WORKER_CONCURRENCY}.`
+  );
+
+  // Start periodic dual-write reconciliation sweeper
+  jobReconciliationService.startPeriodicReconciliation(30000);
 
   const shutdown = async (signal: string) => {
-    logger.info(`Worker received ${signal}. Initiating graceful worker shutdown...`);
+    logger.info(`Worker received ${signal}. Initiating graceful worker shutdown sequence...`);
     try {
+      jobReconciliationService.stopPeriodicReconciliation();
+      await workerManager.shutdown();
       await disconnectDatabase();
       await disconnectRedis();
       logger.info('Worker graceful shutdown complete');
