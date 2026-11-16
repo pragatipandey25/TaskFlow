@@ -5,11 +5,15 @@ import { logger } from '../logging/logger.js';
 import { JobModel } from '../../models/job.model.js';
 import { processorRegistry } from './processor.registry.js';
 import { JobStatus, JobExecutionRecord } from '@taskflow/shared';
+import { sanitizePayload } from '../logging/log-sanitizer.js';
+import { backoffService } from '../queue/backoff.service.js';
+import { dlqService } from '../queue/dlq.service.js';
 
 export class WorkerManager {
   private static instance: WorkerManager;
   private workers = new Map<string, Worker>();
   private workerId: string;
+  private activeJobs = new Set<string>();
 
   private constructor() {
     this.workerId = `worker-${process.pid}-${Math.random().toString(36).substring(2, 7)}`;
@@ -24,6 +28,18 @@ export class WorkerManager {
 
   public getWorkerId(): string {
     return this.workerId;
+  }
+
+  public getActiveJobCount(): number {
+    return this.activeJobs.size;
+  }
+
+  public getActiveJobIds(): string[] {
+    return Array.from(this.activeJobs);
+  }
+
+  public getQueuesSubscribed(): string[] {
+    return Array.from(this.workers.keys());
   }
 
   /**
@@ -47,6 +63,16 @@ export class WorkerManager {
         lockDuration: env.WORKER_LOCK_DURATION_MS,
         stalledInterval: env.WORKER_STALLED_INTERVAL_MS,
         maxStalledCount: env.WORKER_MAX_STALLED_COUNT,
+        settings: {
+          backoffStrategy: (attemptsMade, type, _err, bullJob) => {
+            const jobBackoff = bullJob?.opts?.backoff as { type?: string; delay?: number } | undefined;
+            return backoffService.calculateBackoff(attemptsMade, {
+              type: (type as 'exponential' | 'fixed') || (jobBackoff?.type as 'exponential' | 'fixed') || 'exponential',
+              delayMs: jobBackoff?.delay || 1000,
+              jitter: true,
+            });
+          },
+        },
       }
     );
 
@@ -79,141 +105,158 @@ export class WorkerManager {
    */
   public async processJob(bullJob: BullJob): Promise<Record<string, unknown>> {
     const startTime = Date.now();
-    const jobId = bullJob.data.jobId || bullJob.id;
+    const jobId = String(bullJob.data.jobId || bullJob.id);
 
-    // 1. Fetch Job from MongoDB
-    const mongoJob = await JobModel.findOne({ jobId });
-    if (!mongoJob) {
-      logger.warn(`Job document '${jobId}' not found in MongoDB. Skipping processing.`);
-      return { skipped: true, reason: 'Job document missing in MongoDB' };
-    }
+    this.activeJobs.add(jobId);
 
-    // 2. Abort if job was already cancelled
-    if (mongoJob.status === JobStatus.CANCELLED) {
-      logger.info(`Job '${jobId}' was cancelled before worker execution.`);
-      return { skipped: true, reason: 'Job already cancelled' };
-    }
-
-    // 3. Mark job as PROCESSING
-    const currentAttempt = (mongoJob.attemptsMade || 0) + 1;
-    mongoJob.status = JobStatus.PROCESSING;
-    mongoJob.lockedBy = this.workerId;
-    mongoJob.attemptsMade = currentAttempt;
-    if (!mongoJob.startedAt) {
-      mongoJob.startedAt = new Date();
-    }
-
-    const executionRecord: JobExecutionRecord = {
-      attemptNumber: currentAttempt,
-      workerId: this.workerId,
-      status: 'PROCESSING',
-      startedAt: new Date().toISOString(),
-      logs: [
-        {
-          timestamp: new Date().toISOString(),
-          level: 'info',
-          message: `Worker ${this.workerId} started execution (Attempt ${currentAttempt}/${mongoJob.maxAttempts})`,
-        },
-      ],
-    };
-    mongoJob.executions.push(executionRecord);
-    await mongoJob.save();
-
-    // 4. Progress Updater Hook
-    const updateProgress = async (percentage: number, logMessage?: string) => {
-      try {
-        await bullJob.updateProgress(percentage);
-        mongoJob.progress = percentage;
-        if (logMessage) {
-          const currentExec = mongoJob.executions[mongoJob.executions.length - 1];
-          if (currentExec) {
-            currentExec.logs.push({
-              timestamp: new Date().toISOString(),
-              level: 'info',
-              message: logMessage,
-            });
-          }
-        }
-        await mongoJob.save();
-      } catch (err) {
-        logger.warn(`Failed to update progress for job '${jobId}':`, err);
-      }
-    };
-
-    // 5. Execute Processor Handler
     try {
-      const processor = processorRegistry.get(mongoJob.type);
-      if (!processor) {
-        throw new Error(
-          `No registered processor found for job type '${mongoJob.type}'. Registered types: [${processorRegistry.getRegisteredTypes().join(', ')}]`
-        );
+      // 1. Fetch Job from MongoDB
+      const mongoJob = await JobModel.findOne({ jobId });
+      if (!mongoJob) {
+        logger.warn(`Job document '${jobId}' not found in MongoDB. Skipping processing.`);
+        return { skipped: true, reason: 'Job document missing in MongoDB' };
       }
 
-      const result = await processor.process(mongoJob, updateProgress);
-      const durationMs = Date.now() - startTime;
-
-      // 6. Update MongoDB on SUCCESS
-      mongoJob.status = JobStatus.COMPLETED;
-      mongoJob.progress = 100;
-      mongoJob.completedAt = new Date();
-      mongoJob.result = result;
-
-      const currentExec = mongoJob.executions[mongoJob.executions.length - 1];
-      if (currentExec) {
-        currentExec.status = 'COMPLETED';
-        currentExec.completedAt = new Date().toISOString();
-        currentExec.durationMs = durationMs;
+      // 2. Abort if job was already cancelled
+      if (mongoJob.status === JobStatus.CANCELLED) {
+        logger.info(`Job '${jobId}' was cancelled before worker execution.`);
+        return { skipped: true, reason: 'Job already cancelled' };
       }
 
+      // 3. Mark job as PROCESSING
+      const currentAttempt = (mongoJob.attemptsMade || 0) + 1;
+      mongoJob.status = JobStatus.PROCESSING;
+      mongoJob.lockedBy = this.workerId;
+      mongoJob.attemptsMade = currentAttempt;
+      if (!mongoJob.startedAt) {
+        mongoJob.startedAt = new Date();
+      }
+
+      const queueWaitTimeMs = mongoJob.createdAt
+        ? Math.max(0, startTime - new Date(mongoJob.createdAt).getTime())
+        : 0;
+
+      const executionRecord: JobExecutionRecord = {
+        attemptNumber: currentAttempt,
+        workerId: this.workerId,
+        status: 'PROCESSING',
+        startedAt: new Date().toISOString(),
+        logs: [
+          {
+            timestamp: new Date().toISOString(),
+            level: 'info',
+            message: `Worker ${this.workerId} started execution (Attempt ${currentAttempt}/${mongoJob.maxAttempts}, waitTime: ${queueWaitTimeMs}ms)`,
+          },
+        ],
+      };
+      mongoJob.executions.push(executionRecord);
       await mongoJob.save();
-      return result;
-    } catch (err: unknown) {
-      const durationMs = Date.now() - startTime;
-      const error = err instanceof Error ? err : new Error(String(err));
 
-      const errorDetails = {
-        message: error.message,
-        stack: error.stack,
-        code: (error as { code?: string }).code || 'JOB_EXECUTION_FAILURE',
-        failedAt: new Date(),
+      // 4. Progress Updater Hook
+      const updateProgress = async (percentage: number, logMessage?: string) => {
+        try {
+          await bullJob.updateProgress(percentage);
+          mongoJob.progress = percentage;
+          if (logMessage) {
+            const sanitizedLog = sanitizePayload(logMessage);
+            const currentExec = mongoJob.executions[mongoJob.executions.length - 1];
+            if (currentExec) {
+              currentExec.logs.push({
+                timestamp: new Date().toISOString(),
+                level: 'info',
+                message: sanitizedLog,
+              });
+            }
+          }
+          await mongoJob.save();
+        } catch (err) {
+          logger.warn(`Failed to update progress for job '${jobId}':`, err);
+        }
       };
 
-      const currentExec = mongoJob.executions[mongoJob.executions.length - 1];
-      if (currentExec) {
-        currentExec.status = 'FAILED';
-        currentExec.completedAt = new Date().toISOString();
-        currentExec.durationMs = durationMs;
-        currentExec.errorDetails = {
-          message: errorDetails.message,
-          stack: errorDetails.stack,
-          code: errorDetails.code,
-        };
-        currentExec.logs.push({
-          timestamp: new Date().toISOString(),
-          level: 'error',
-          message: `Attempt ${currentAttempt} failed: ${error.message}`,
-        });
+      // 5. Execute Processor Handler
+      try {
+        const processor = processorRegistry.get(mongoJob.type);
+        if (!processor) {
+          throw new Error(
+            `No registered processor found for job type '${mongoJob.type}'. Registered types: [${processorRegistry.getRegisteredTypes().join(', ')}]`
+          );
+        }
+
+        const rawResult = await processor.process(mongoJob, updateProgress);
+        const durationMs = Date.now() - startTime;
+        const result = sanitizePayload(rawResult) as Record<string, unknown>;
+
+        // 6. Update MongoDB on SUCCESS
+        mongoJob.status = JobStatus.COMPLETED;
+        mongoJob.progress = 100;
+        mongoJob.completedAt = new Date();
+        mongoJob.result = result;
+
+        const currentExec = mongoJob.executions[mongoJob.executions.length - 1];
+        if (currentExec) {
+          currentExec.status = 'COMPLETED';
+          currentExec.completedAt = new Date().toISOString();
+          currentExec.durationMs = durationMs;
+        }
+
+        await mongoJob.save();
+        return result;
+      } catch (err: unknown) {
+        const durationMs = Date.now() - startTime;
+        const error = err instanceof Error ? err : new Error(String(err));
+        const sanitizedMessage = sanitizePayload(error.message);
+
+        // Evaluate Retry vs Dead-Letter Queue
+        if (currentAttempt < mongoJob.maxAttempts) {
+          const nextRetryDelayMs = backoffService.calculateBackoff(currentAttempt, {
+            type: mongoJob.backoff?.type,
+            delayMs: mongoJob.backoff?.delayMs,
+            jitter: true,
+          });
+
+          mongoJob.status = JobStatus.RETRYING;
+          mongoJob.scheduledAt = new Date(Date.now() + nextRetryDelayMs);
+
+          const errorDetails = {
+            message: sanitizedMessage,
+            stack: error.stack,
+            code: (error as { code?: string }).code || 'JOB_EXECUTION_FAILURE',
+            failedAt: new Date(),
+          };
+
+          const currentExec = mongoJob.executions[mongoJob.executions.length - 1];
+          if (currentExec) {
+            currentExec.status = 'FAILED';
+            currentExec.completedAt = new Date().toISOString();
+            currentExec.durationMs = durationMs;
+            currentExec.errorDetails = {
+              message: errorDetails.message,
+              stack: errorDetails.stack,
+              code: errorDetails.code,
+            };
+            currentExec.logs.push({
+              timestamp: new Date().toISOString(),
+              level: 'error',
+              message: `Attempt ${currentAttempt} failed: ${sanitizedMessage}. Next retry scheduled in ${nextRetryDelayMs}ms with jitter.`,
+            });
+          }
+
+          mongoJob.error = errorDetails;
+          await mongoJob.save();
+          logger.warn(
+            `Job '${jobId}' failed attempt ${currentAttempt}/${mongoJob.maxAttempts}. State set to RETRYING with ${nextRetryDelayMs}ms backoff delay.`
+          );
+        } else {
+          // Exhausted all attempts -> Route to Dead-Letter Queue
+          await dlqService.quarantineJob(mongoJob, error, durationMs);
+        }
+
+        // Re-throw so BullMQ handles backoff delay or moves to failed state
+        throw error;
       }
-
-      mongoJob.error = errorDetails;
-
-      // Evaluate Retry vs Dead-Letter Queue
-      if (currentAttempt < mongoJob.maxAttempts) {
-        mongoJob.status = JobStatus.RETRYING;
-        logger.warn(
-          `Job '${jobId}' failed attempt ${currentAttempt}/${mongoJob.maxAttempts}. State set to RETRYING.`
-        );
-      } else {
-        mongoJob.status = JobStatus.DEAD_LETTER;
-        mongoJob.failedAt = new Date();
-        logger.error(
-          `Job '${jobId}' exhausted all ${mongoJob.maxAttempts} attempts. Quarantined to DEAD_LETTER.`
-        );
-      }
-
-      await mongoJob.save();
-      // Re-throw so BullMQ handles backoff delay or moves to failed state
-      throw error;
+    } finally {
+      this.activeJobs.delete(jobId);
     }
   }
 

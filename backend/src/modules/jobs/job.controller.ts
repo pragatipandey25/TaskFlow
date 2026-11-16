@@ -142,4 +142,39 @@ export class JobController {
       message: 'Job successfully redriven into queue.',
     });
   }
+
+  public static async bulkRedrive(req: Request, res: Response): Promise<void> {
+    if (!req.user) {
+      throw new UnauthorizedError('Authentication required');
+    }
+
+    const queueName = req.query.queueName as string | undefined;
+    const result = await jobService.bulkRedrive(
+      req.user.id,
+      req.user.role as UserRole,
+      queueName
+    );
+
+    res.status(200).json({
+      success: true,
+      data: result,
+      message: `Successfully rescheduled ${result.redrivenCount} dead-letter jobs.`,
+    });
+  }
+
+  public static async getDlqStats(req: Request, res: Response): Promise<void> {
+    if (!req.user) {
+      throw new UnauthorizedError('Authentication required');
+    }
+
+    const stats = await jobService.getDlqStats(
+      req.user.id,
+      req.user.role as UserRole
+    );
+
+    res.status(200).json({
+      success: true,
+      data: stats,
+    });
+  }
 }

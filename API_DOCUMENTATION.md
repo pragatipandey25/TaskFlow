@@ -390,6 +390,50 @@ All error responses adhere to a uniform structure:
 
 ---
 
+### 3.6 Bulk Redrive DLQ Jobs
+- **Route**: `POST /api/jobs/dlq/redrive-all`
+- **Auth**: `developer`, `admin`
+- **Description**: Reschedules all quarantined `DEAD_LETTER` jobs back into active BullMQ processing.
+- **Request Body** (optional):
+  ```json
+  {
+    "queueName": "default"
+  }
+  ```
+- **Response `200 OK`**:
+  ```json
+  {
+    "success": true,
+    "data": {
+      "rescheduledCount": 14,
+      "message": "Successfully redriven 14 dead-letter jobs."
+    }
+  }
+  ```
+- **Error Codes**: `403 Forbidden` (`viewer` role).
+
+---
+
+### 3.7 DLQ Statistics Aggregation
+- **Route**: `GET /api/jobs/dlq/stats`
+- **Auth**: `viewer`, `developer`, `admin`
+- **Description**: Returns counts of dead-letter jobs partitioned by queue.
+- **Response `200 OK`**:
+  ```json
+  {
+    "success": true,
+    "data": {
+      "totalDeadLetter": 5,
+      "byQueue": {
+        "default": 3,
+        "transcoding-queue": 2
+      }
+    }
+  }
+  ```
+
+---
+
 ## 4. Queue Management Endpoints
 
 ### 4.1 Create New Queue

@@ -9,6 +9,8 @@ import { errorHandler } from './core/errors/error-handler.middleware.js';
 import { healthRouter } from './modules/health/health.routes.js';
 import { authRouter } from './modules/auth/auth.routes.js';
 import { jobRoutes } from './modules/jobs/job.routes.js';
+import { queueRoutes } from './modules/queues/queue.routes.js';
+import { workerRoutes } from './modules/workers/worker.routes.js';
 
 export function createApp(): Express {
   const app = express();
@@ -45,6 +47,8 @@ export function createApp(): Express {
   app.use('/api/health', healthRouter);
   app.use('/api/auth', authRouter);
   app.use('/api/jobs', jobRoutes);
+  app.use('/api/queues', queueRoutes);
+  app.use('/api/workers', workerRoutes);
 
   // 404 Handler
   app.use(notFoundHandler);

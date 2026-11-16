@@ -24,6 +24,20 @@ router.get(
   asyncHandler(JobController.listJobs)
 );
 
+// Get Dead-Letter Queue summary statistics
+router.get(
+  '/dlq/stats',
+  requireRole(UserRole.VIEWER, UserRole.DEVELOPER, UserRole.ADMIN),
+  asyncHandler(JobController.getDlqStats)
+);
+
+// Bulk redrive dead-letter jobs (Developers and Admins)
+router.post(
+  '/dlq/redrive-all',
+  requireRole(UserRole.DEVELOPER, UserRole.ADMIN),
+  asyncHandler(JobController.bulkRedrive)
+);
+
 // Get specific job details and execution history
 router.get(
   '/:id',

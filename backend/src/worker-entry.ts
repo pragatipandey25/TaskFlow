@@ -5,6 +5,7 @@ import { disconnectRedis } from './config/redis.js';
 import { registerDefaultProcessors } from './core/worker/register-processors.js';
 import { workerManager } from './core/worker/worker-manager.js';
 import { jobReconciliationService } from './core/queue/reconciliation.service.js';
+import { workerHeartbeatService } from './core/worker/worker-heartbeat.service.js';
 
 /**
  * TaskFlow Background Worker Process Entrypoint
@@ -31,13 +32,27 @@ async function startWorker(): Promise<void> {
     `Worker runtime initialized [WorkerID: ${workerManager.getWorkerId()}]. Listening on queue '${env.DEFAULT_QUEUE_NAME}' with concurrency ${env.WORKER_CONCURRENCY}.`
   );
 
+  // Initialize Worker Heartbeat & Telemetry
+  await workerHeartbeatService.startHeartbeat(
+    workerManager.getWorkerId(),
+    workerManager.getQueuesSubscribed(),
+    env.WORKER_CONCURRENCY,
+    () => workerManager.getActiveJobCount(),
+    15000
+  );
+
+  // Start periodic fleet watchdog to identify stalled/degraded workers
+  workerHeartbeatService.startWatchdog(30000);
+
   // Start periodic dual-write reconciliation sweeper
   jobReconciliationService.startPeriodicReconciliation(30000);
 
   const shutdown = async (signal: string) => {
     logger.info(`Worker received ${signal}. Initiating graceful worker shutdown sequence...`);
     try {
+      workerHeartbeatService.stopWatchdog();
       jobReconciliationService.stopPeriodicReconciliation();
+      await workerHeartbeatService.stopHeartbeat(workerManager.getWorkerId());
       await workerManager.shutdown();
       await disconnectDatabase();
       await disconnectRedis();

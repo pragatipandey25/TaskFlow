@@ -1,12 +1,41 @@
-import React from 'react';
+import React, { useEffect, useState, useCallback } from 'react';
 import { useAuth } from '../context/AuthContext';
 import { Navbar } from '../components/layout/Navbar';
 import { JobList } from '../components/jobs/JobList';
+import { QueueMetricsChart } from '../components/observability/QueueMetricsChart';
+import { WorkerFleetCard } from '../components/observability/WorkerFleetCard';
+import { queueService, QueueListItem } from '../services/queue.service';
+import { workerService } from '../services/worker.service';
+import { WorkerResponse } from '@taskflow/shared';
 import { Shield, Clock, Key, Activity } from 'lucide-react';
 import { Link } from 'react-router-dom';
 
 export const DashboardPage: React.FC = () => {
   const { user } = useAuth();
+  const [queues, setQueues] = useState<QueueListItem[]>([]);
+  const [workers, setWorkers] = useState<WorkerResponse[]>([]);
+  const [isObservabilityLoading, setIsObservabilityLoading] = useState<boolean>(true);
+
+  const fetchObservabilityData = useCallback(async () => {
+    try {
+      const [queueData, workerData] = await Promise.all([
+        queueService.listQueues().catch(() => []),
+        workerService.listWorkers().catch(() => []),
+      ]);
+      setQueues(queueData);
+      setWorkers(workerData);
+    } catch {
+      // Squelch errors for smooth background polling
+    } finally {
+      setIsObservabilityLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    fetchObservabilityData();
+    const interval = setInterval(fetchObservabilityData, 10000);
+    return () => clearInterval(interval);
+  }, [fetchObservabilityData]);
 
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col">
@@ -17,7 +46,7 @@ export const DashboardPage: React.FC = () => {
         <div className="p-8 bg-gradient-to-r from-slate-900 via-indigo-950/40 to-slate-900 border border-slate-800 rounded-2xl shadow-2xl relative overflow-hidden">
           <div className="relative z-10">
             <span className="px-3 py-1 bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 text-xs font-semibold uppercase tracking-wider rounded-full inline-block mb-3">
-              Milestone 3 Active • BullMQ Queues & Worker Fleet Operational
+              Milestone 4 Active • Production Observability & Fleet Telemetry
             </span>
             <h1 className="text-3xl font-extrabold text-white tracking-tight">
               Welcome back, {user?.name}
@@ -56,7 +85,7 @@ export const DashboardPage: React.FC = () => {
             </div>
             <div className="text-2xl font-bold text-white">BullMQ + Redis</div>
             <p className="text-xs text-slate-500 mt-2">
-              Lock Renewal: 30s • Stalled Watchdog: 15s • Concurrency: 5
+              Lock Renewal: 30s • Stalled Watchdog: 15s • Heartbeat: 15s
             </p>
           </div>
 
@@ -74,7 +103,17 @@ export const DashboardPage: React.FC = () => {
           </div>
         </div>
 
-        {/* Milestone 3: Live Background Jobs Queue Section */}
+        {/* Milestone 4: Operational Observability Section */}
+        <section className="space-y-6">
+          <QueueMetricsChart queues={queues} isLoading={isObservabilityLoading} />
+          <WorkerFleetCard
+            workers={workers}
+            isLoading={isObservabilityLoading}
+            onRefresh={fetchObservabilityData}
+          />
+        </section>
+
+        {/* Live Background Jobs Queue Section */}
         <section>
           <JobList />
         </section>

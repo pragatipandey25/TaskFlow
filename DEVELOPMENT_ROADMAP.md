@@ -86,16 +86,16 @@ Build the high-throughput job ingestion pipeline, request deduplication via idem
 - Expose REST endpoints: `POST /api/jobs`, `GET /api/jobs`, `GET /api/jobs/:id`.
 
 ### 3.3 Acceptance Criteria
-- [ ] Submitting a job persists the record to MongoDB and enqueues it to Redis BullMQ.
-- [ ] Duplicate submissions with identical `Idempotency-Key` headers do not create duplicate queue entries.
-- [ ] Job priority (1-10) is translated into BullMQ numeric priority correctly.
+- [x] Submitting a job persists the record to MongoDB and enqueues it to Redis BullMQ.
+- [x] Duplicate submissions with identical `Idempotency-Key` headers do not create duplicate queue entries.
+- [x] Job priority (1-10) is translated into BullMQ numeric priority correctly.
 
 ---
 
 ## Milestone 4: Background Workers & Concurrency Execution
 
 ### 4.1 Objectives
-Implement the distributed worker process engine, job dispatchers, execution telemetry, and concurrency management.
+Implement the distributed worker process engine, job dispatchers, execution telemetry, and concurrency management. Complete production observability across queues, workers, and diagnostic execution traces.
 
 ### 4.2 Key Engineering Deliverables
 - Create standalone worker entrypoint (`backend/src/worker-entry.ts`).
@@ -104,16 +104,29 @@ Implement the distributed worker process engine, job dispatchers, execution tele
   - Dynamic queue subscription and process concurrency settings.
   - Job processor registry routing jobs to dedicated handlers based on `job.type`.
   - Process telemetry: Track start time, execution duration, and memory footprint.
-- Implement Worker Heartbeat mechanism:
-  - Every 15 seconds, worker writes heartbeat to Redis and updates `WorkerModel` in MongoDB.
-  - Track active job count and process health (`healthy`, `degraded`, `dead`).
+- Implement Worker Heartbeat & Telemetry mechanism:
+  - Every 15 seconds, worker writes heartbeat to Redis (`workers:${workerId}:heartbeat` with 45s TTL) and updates `WorkerModel` in MongoDB.
+  - Track active job count and process health status (`healthy`, `degraded`, `dead`).
+  - System metrics snapshot: Memory RSS, Heap used, and cross-core CPU percentage.
+- Implement Fleet Watchdog Scanner:
+  - Scans for stale worker heartbeats every 30s. Workers without heartbeats between 30-45s transition to `DEGRADED`; workers >45s transition to `DEAD` with active job counts reset to 0.
+- Implement Log & Sensitive Payload Sanitizer:
+  - Recursive key and string sanitization redacting passwords, secrets, tokens, API keys, cookies, and raw JWT signatures in diagnostic logs and payloads.
+- Implement Queue & Worker Observability REST APIs:
+  - `GET /api/workers` & `GET /api/workers/:id`: Fleet listing and single-worker telemetry.
+  - `POST /api/queues`, `GET /api/queues`, & `GET /api/queues/:id/stats`: Queue creation (admin), fleet depth listing, and 60-second throughput analytics.
+- Build Operational Frontend Dashboard Observability:
+  - Real-time Recharts queue depth distribution chart across execution states.
+  - Worker fleet telemetry cards displaying health badges, CPU/RAM utilization, concurrency capacity, and heartbeat age.
 - Implement Graceful Shutdown protocol handling `SIGINT`/`SIGTERM`:
-  - Pause worker, wait for active jobs to finish (with 25s timeout), and close DB/Redis pools cleanly.
+  - Pause worker intake, unregister heartbeat, flag worker as `DEAD`, allow active jobs to finish, and close DB/Redis pools cleanly.
 
 ### 4.3 Acceptance Criteria
-- [ ] Multiple worker processes can run concurrently without stealing or double-processing jobs.
-- [ ] Stalled jobs caused by abruptly killed worker processes are detected and recovered by remaining workers.
-- [ ] Graceful termination allows in-flight jobs to complete without abrupt truncation.
+- [x] Multiple worker processes can run concurrently without stealing or double-processing jobs.
+- [x] Stalled jobs caused by abruptly killed worker processes are detected and recovered by remaining workers.
+- [x] Graceful termination allows in-flight jobs to complete without abrupt truncation.
+- [x] Queue depth, worker availability, and real-time processing statistics are exposed via authenticated APIs and React operational dashboard.
+- [x] Secrets, passwords, API tokens, and JWT signatures are masked in logs and execution histories.
 
 ---
 
@@ -125,17 +138,25 @@ Implement exponential backoff with jitter, transient failure recovery, poison-pi
 ### 5.2 Key Engineering Deliverables
 - Implement `BackoffService` calculating exponential delay with full randomized jitter:
   $$\text{Delay} = \text{random}(0, \min(\text{maxDelay}, \text{baseDelay} \times 2^{\text{attempt}-1}))$$
-- Implement Worker failure listener:
+  Provides deterministic calculation alternative for verification and test suites.
+- Implement Worker failure listener in `WorkerManager`:
   - On error, check if attempts remain ($attemptsMade < maxAttempts$).
-  - If attempts remain: Update MongoDB `Job.status = 'RETRYING'` and record failure details in `JobExecution`.
-  - If attempts exhausted: Transition job to `DEAD_LETTER`, route payload to the Dead-Letter Queue (`taskflow-dlq`), and store final error diagnostics.
-- Implement DLQ Redrive API: `POST /api/jobs/:id/retry` to reschedule quarantined jobs.
-- Implement Job Cancellation API: `POST /api/jobs/:id/cancel` supporting cancellation of waiting, delayed, and active jobs.
+  - If attempts remain: Update MongoDB `Job.status = 'RETRYING'` with jittered `scheduledAt` calculation and append diagnostics in `JobExecution`.
+  - If attempts exhausted: Delegate to `DlqService.quarantineJob` — transition job to `DEAD_LETTER`, route payload to the BullMQ Dead-Letter Queue (`taskflow-dlq` and `${queueName}-dlq`), and store final error diagnostics.
+- Implement DLQ Service & APIs:
+  - Single Redrive API: `POST /api/jobs/:id/retry` to reschedule quarantined `DEAD_LETTER` or `FAILED` jobs.
+  - Bulk Redrive API: `POST /api/jobs/dlq/redrive-all` to mass-redrive dead-letter jobs with optional `queueName` filter.
+  - DLQ Stats API: `GET /api/jobs/dlq/stats` reporting dead-letter queue metrics aggregated by queue name.
+- Implement Job Cancellation API: `POST /api/jobs/:id/cancel` supporting cancellation of waiting, delayed, and retrying jobs.
+- Operational Frontend Dashboard:
+  - DLQ interactive filter tab on Job List with live DLQ counter badge.
+  - Individual job redrive & bulk DLQ redrive action buttons.
+  - In-flight/waiting job cancellation controls.
 
 ### 5.3 Acceptance Criteria
-- [ ] Transient failures are retried according to the exponential backoff schedule.
-- [ ] Jobs that fail after maximum attempts are automatically quarantined in the DLQ and marked as `DEAD_LETTER`.
-- [ ] Operators can inspect a dead-letter job and trigger a manual redrive via API.
+- [x] Transient failures are retried according to the exponential backoff schedule.
+- [x] Jobs that fail after maximum attempts are automatically quarantined in the DLQ and marked as `DEAD_LETTER`.
+- [x] Operators can inspect a dead-letter job and trigger a manual redrive via API.
 
 ---
 

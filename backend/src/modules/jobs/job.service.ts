@@ -7,6 +7,8 @@ import { queueService } from '../../core/queue/queue.service.js';
 import { AppError, NotFoundError, ForbiddenError } from '../../core/errors/app-error.js';
 import { logger } from '../../core/logging/logger.js';
 
+import { dlqService } from '../../core/queue/dlq.service.js';
+
 export interface PaginatedJobsResult {
   jobs: IJobDocument[];
   pagination: {
@@ -238,36 +240,28 @@ export class JobService {
     userId: string,
     userRole: UserRole
   ): Promise<IJobDocument> {
-    const job = await this.findJobByIdentifier(identifier);
+    return dlqService.redriveJob(identifier, userId, userRole);
+  }
 
-    if (userRole !== UserRole.ADMIN && job.userId.toString() !== userId) {
-      throw new ForbiddenError('Access forbidden: You do not have permission to retry this job');
-    }
+  /**
+   * Bulk redrives all dead-letter jobs, optionally filtered by queue.
+   */
+  public async bulkRedrive(
+    userId: string,
+    userRole: UserRole,
+    queueName?: string
+  ): Promise<{ redrivenCount: number; jobIds: string[] }> {
+    return dlqService.bulkRedrive(queueName, userId, userRole);
+  }
 
-    if (job.status !== JobStatus.FAILED && job.status !== JobStatus.DEAD_LETTER) {
-      throw new AppError(
-        `Job must be in FAILED or DEAD_LETTER state to be retried (current state: '${job.status}')`,
-        400,
-        'BAD_REQUEST'
-      );
-    }
-
-    // Reset attempts and error state for manual redrive
-    job.attemptsMade = 0;
-    job.status = JobStatus.QUEUED;
-    job.set('error', undefined);
-    job.progress = 0;
-    job.completedAt = undefined;
-    job.failedAt = undefined;
-    job.cancelledAt = undefined;
-
-    // Enqueue fresh instance into BullMQ
-    const bullJobId = await queueService.addJob(job);
-    job.bullJobId = bullJobId;
-    await job.save();
-
-    logger.info(`Job '${job.jobId}' redriven successfully into BullMQ by user '${userId}'.`);
-    return job;
+  /**
+   * Retrieves summary metrics for dead-letter jobs.
+   */
+  public async getDlqStats(
+    userId: string,
+    userRole: UserRole
+  ): Promise<{ totalDeadLetters: number; byQueue: Record<string, number> }> {
+    return dlqService.getDlqStats(userRole, userId);
   }
 
   private async findJobByIdentifier(identifier: string): Promise<IJobDocument> {

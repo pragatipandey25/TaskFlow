@@ -136,6 +136,26 @@ export const JobList: React.FC = () => {
         </div>
 
         <div className="flex items-center space-x-3">
+          {activeTab === JobStatus.DEAD_LETTER && totalItems > 0 && (
+            <button
+              onClick={async () => {
+                if (window.confirm('Are you sure you want to redrive all quarantined dead-letter jobs?')) {
+                  try {
+                    const result = await jobApiService.bulkRedrive();
+                    fetchJobs();
+                    alert(`Successfully redriven ${result.redrivenCount} dead-letter jobs.`);
+                  } catch (err) {
+                    alert(err instanceof Error ? err.message : 'Bulk redrive failed');
+                  }
+                }
+              }}
+              className="px-3 py-2 bg-rose-600/20 hover:bg-rose-600/30 text-rose-300 border border-rose-500/30 rounded-xl text-xs font-semibold transition flex items-center space-x-1.5"
+            >
+              <RotateCcw className="w-3.5 h-3.5" />
+              <span>Bulk Redrive DLQ ({totalItems})</span>
+            </button>
+          )}
+
           <button
             onClick={() => fetchJobs()}
             className="p-2.5 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-xl transition"
