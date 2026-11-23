@@ -8,6 +8,7 @@ import { AppError, NotFoundError, ForbiddenError } from '../../core/errors/app-e
 import { logger } from '../../core/logging/logger.js';
 
 import { dlqService } from '../../core/queue/dlq.service.js';
+import { workerManager } from '../../core/worker/worker-manager.js';
 
 export interface PaginatedJobsResult {
   jobs: IJobDocument[];
@@ -215,17 +216,38 @@ export class JobService {
       );
     }
 
+    // If job is in-flight / processing, cooperatively notify the worker
+    if (job.status === JobStatus.PROCESSING) {
+      workerManager.cancelActiveJob(job.jobId, reason);
+    }
+
     // Cancel in BullMQ if enqueued
     if (job.bullJobId) {
       await queueService.cancelJob(job.queueName, job.bullJobId);
     }
 
+    const cancellationNotice = reason
+      ? `Job cancelled by operator request: ${reason}. Note: In-flight operations may have partially executed; external side effects are not automatically rolled back.`
+      : 'Job cancelled by operator request. Note: In-flight operations may have partially executed; external side effects are not automatically rolled back.';
+
     job.status = JobStatus.CANCELLED;
     job.cancelledAt = new Date();
     job.error = {
-      message: reason || 'Job cancelled by user request',
+      message: cancellationNotice,
       failedAt: new Date(),
     };
+
+    // Update execution history record if currently processing
+    const currentExec = job.executions[job.executions.length - 1];
+    if (currentExec && currentExec.status === 'PROCESSING') {
+      currentExec.status = 'FAILED';
+      currentExec.completedAt = new Date().toISOString();
+      currentExec.logs.push({
+        timestamp: new Date().toISOString(),
+        level: 'warn',
+        message: cancellationNotice,
+      });
+    }
 
     await job.save();
     logger.info(`Job '${job.jobId}' cancelled successfully by user '${userId}'.`);

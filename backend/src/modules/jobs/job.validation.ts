@@ -121,5 +121,16 @@ export const cancelJobSchema = z.object({
   reason: z.string().trim().max(200).optional(),
 });
 
+export const bulkRedriveSchema = z.object({
+  queueName: z
+    .string()
+    .trim()
+    .min(1)
+    .max(50)
+    .regex(/^[a-zA-Z0-9_-]+$/, 'Queue name must be alphanumeric with dashes or underscores')
+    .optional(),
+});
+
 export type CreateJobDTO = z.infer<typeof createJobSchema>;
 export type ListJobsQueryDTO = z.infer<typeof listJobsQuerySchema>;
+export type BulkRedriveDTO = z.infer<typeof bulkRedriveSchema>;

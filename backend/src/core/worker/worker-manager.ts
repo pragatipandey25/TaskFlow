@@ -8,12 +8,14 @@ import { JobStatus, JobExecutionRecord } from '@taskflow/shared';
 import { sanitizePayload } from '../logging/log-sanitizer.js';
 import { backoffService } from '../queue/backoff.service.js';
 import { dlqService } from '../queue/dlq.service.js';
+import { AppError } from '../errors/app-error.js';
 
 export class WorkerManager {
   private static instance: WorkerManager;
   private workers = new Map<string, Worker>();
   private workerId: string;
   private activeJobs = new Set<string>();
+  private activeAbortControllers = new Map<string, AbortController>();
 
   private constructor() {
     this.workerId = `worker-${process.pid}-${Math.random().toString(36).substring(2, 7)}`;
@@ -40,6 +42,23 @@ export class WorkerManager {
 
   public getQueuesSubscribed(): string[] {
     return Array.from(this.workers.keys());
+  }
+
+  public isJobActive(jobId: string): boolean {
+    return this.activeJobs.has(jobId);
+  }
+
+  /**
+   * Cooperatively dispatches an AbortSignal to a currently executing in-flight job.
+   */
+  public cancelActiveJob(jobId: string, reason?: string): boolean {
+    const controller = this.activeAbortControllers.get(jobId);
+    if (controller) {
+      controller.abort(reason || 'Job cancelled by operator request');
+      logger.info(`Dispatched cooperative AbortSignal to active job '${jobId}'.`);
+      return true;
+    }
+    return false;
   }
 
   /**
@@ -108,6 +127,8 @@ export class WorkerManager {
     const jobId = String(bullJob.data.jobId || bullJob.id);
 
     this.activeJobs.add(jobId);
+    const abortController = new AbortController();
+    this.activeAbortControllers.set(jobId, abortController);
 
     try {
       // 1. Fetch Job from MongoDB
@@ -152,9 +173,28 @@ export class WorkerManager {
       mongoJob.executions.push(executionRecord);
       await mongoJob.save();
 
-      // 4. Progress Updater Hook
+      // 4. Progress Updater Hook with cooperative cancellation check
       const updateProgress = async (percentage: number, logMessage?: string) => {
         try {
+          if (abortController.signal.aborted) {
+            throw new AppError(
+              `Job '${jobId}' was cancelled during execution. Aborting further processing.`,
+              499,
+              'JOB_CANCELLED'
+            );
+          }
+
+          // Check if status in MongoDB was changed to CANCELLED concurrently
+          const currentDoc = await JobModel.findOne({ jobId }).select('status');
+          if (currentDoc && currentDoc.status === JobStatus.CANCELLED) {
+            abortController.abort('Job marked as cancelled in database');
+            throw new AppError(
+              `Job '${jobId}' was marked CANCELLED in database during execution.`,
+              499,
+              'JOB_CANCELLED'
+            );
+          }
+
           await bullJob.updateProgress(percentage);
           mongoJob.progress = percentage;
           if (logMessage) {
@@ -170,6 +210,9 @@ export class WorkerManager {
           }
           await mongoJob.save();
         } catch (err) {
+          if ((err as { code?: string }).code === 'JOB_CANCELLED') {
+            throw err;
+          }
           logger.warn(`Failed to update progress for job '${jobId}':`, err);
         }
       };
@@ -183,29 +226,63 @@ export class WorkerManager {
           );
         }
 
-        const rawResult = await processor.process(mongoJob, updateProgress);
+        const rawResult = await processor.process(mongoJob, updateProgress, abortController.signal);
         const durationMs = Date.now() - startTime;
         const result = sanitizePayload(rawResult) as Record<string, unknown>;
 
-        // 6. Update MongoDB on SUCCESS
-        mongoJob.status = JobStatus.COMPLETED;
-        mongoJob.progress = 100;
-        mongoJob.completedAt = new Date();
-        mongoJob.result = result;
-
-        const currentExec = mongoJob.executions[mongoJob.executions.length - 1];
-        if (currentExec) {
-          currentExec.status = 'COMPLETED';
-          currentExec.completedAt = new Date().toISOString();
-          currentExec.durationMs = durationMs;
+        // 6. Check if cancelled before writing COMPLETED state
+        if (abortController.signal.aborted) {
+          logger.info(`Job '${jobId}' was cancelled during processing. Preserving CANCELLED state.`);
+          return { cancelled: true, reason: 'Job cancelled during execution' };
         }
 
-        await mongoJob.save();
+        // Atomically update MongoDB to COMPLETED only if status is NOT CANCELLED
+        const completedJob = await JobModel.findOneAndUpdate(
+          { jobId, status: { $ne: JobStatus.CANCELLED } },
+          {
+            $set: {
+              status: JobStatus.COMPLETED,
+              progress: 100,
+              completedAt: new Date(),
+              result,
+              'executions.$[elem].status': 'COMPLETED',
+              'executions.$[elem].completedAt': new Date().toISOString(),
+              'executions.$[elem].durationMs': durationMs,
+            },
+          },
+          {
+            arrayFilters: [{ 'elem.attemptNumber': currentAttempt }],
+            new: true,
+          }
+        );
+
+        if (!completedJob) {
+          logger.info(`Job '${jobId}' was cancelled concurrently before completion. COMPLETED state avoided.`);
+          return { cancelled: true, reason: 'Job cancelled concurrently before completion' };
+        }
+
         return result;
       } catch (err: unknown) {
         const durationMs = Date.now() - startTime;
         const error = err instanceof Error ? err : new Error(String(err));
         const sanitizedMessage = sanitizePayload(error.message);
+
+        // Check if cancellation caused this failure or occurred concurrently
+        const isCancelled =
+          abortController.signal.aborted ||
+          (error as { code?: string }).code === 'JOB_CANCELLED' ||
+          (await JobModel.findOne({ jobId }).select('status'))?.status === JobStatus.CANCELLED;
+
+        if (isCancelled) {
+          logger.info(`Job '${jobId}' halted due to cancellation. Skipping retries and DLQ quarantine.`);
+          const latest = await JobModel.findOne({ jobId });
+          if (latest && latest.status !== JobStatus.CANCELLED) {
+            latest.status = JobStatus.CANCELLED;
+            latest.cancelledAt = new Date();
+            await latest.save();
+          }
+          return { cancelled: true, reason: 'Execution halted due to cancellation' };
+        }
 
         // Evaluate Retry vs Dead-Letter Queue
         if (currentAttempt < mongoJob.maxAttempts) {
@@ -256,6 +333,7 @@ export class WorkerManager {
         throw error;
       }
     } finally {
+      this.activeAbortControllers.delete(jobId);
       this.activeJobs.delete(jobId);
     }
   }

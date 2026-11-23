@@ -5,6 +5,7 @@ import {
   listJobsQuerySchema,
   jobIdParamSchema,
   cancelJobSchema,
+  bulkRedriveSchema,
 } from './job.validation.js';
 import { AppError, UnauthorizedError, ValidationError } from '../../core/errors/app-error.js';
 import { UserRole } from '@taskflow/shared';
@@ -148,7 +149,15 @@ export class JobController {
       throw new UnauthorizedError('Authentication required');
     }
 
-    const queueName = req.query.queueName as string | undefined;
+    const bodyResult = bulkRedriveSchema.safeParse(req.body || {});
+    const queryResult = bulkRedriveSchema.safeParse(req.query || {});
+    const queueName =
+      bodyResult.success && bodyResult.data.queueName
+        ? bodyResult.data.queueName
+        : queryResult.success && queryResult.data.queueName
+          ? queryResult.data.queueName
+          : undefined;
+
     const result = await jobService.bulkRedrive(
       req.user.id,
       req.user.role as UserRole,

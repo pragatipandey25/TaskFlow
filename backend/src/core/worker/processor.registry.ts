@@ -4,7 +4,8 @@ import { logger } from '../logging/logger.js';
 export interface IJobProcessor {
   process(
     job: IJobDocument,
-    updateProgress: (percentage: number, logMessage?: string) => Promise<void>
+    updateProgress: (percentage: number, logMessage?: string) => Promise<void>,
+    signal?: AbortSignal
   ): Promise<Record<string, unknown>>;
 }
 

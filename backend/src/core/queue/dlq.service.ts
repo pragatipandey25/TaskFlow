@@ -23,12 +23,19 @@ export class DlqService {
 
   /**
    * Quarantines a permanently failed or poison-pill job into the Dead-Letter Queue.
+   * Guarantees idempotency: repeated failure events cannot create duplicate DLQ entries.
    */
   public async quarantineJob(
     mongoJob: IJobDocument,
     error: Error,
     durationMs: number
   ): Promise<void> {
+    // 1. Idempotency check: skip if already marked as DEAD_LETTER
+    if (mongoJob.status === JobStatus.DEAD_LETTER) {
+      logger.info(`Job '${mongoJob.jobId}' is already in DEAD_LETTER status. Skipping duplicate quarantine.`);
+      return;
+    }
+
     const sanitizedMessage = sanitizePayload(error.message);
     const errorCode = (error as { code?: string }).code || 'DEAD_LETTER_QUARANTINED';
 
@@ -39,8 +46,30 @@ export class DlqService {
       failedAt: new Date(),
     };
 
+    // 2. Atomic state transition in MongoDB ensuring only one quarantine operation succeeds
+    const updatedJob = await JobModel.findOneAndUpdate(
+      {
+        _id: mongoJob._id,
+        status: { $ne: JobStatus.DEAD_LETTER },
+      },
+      {
+        $set: {
+          status: JobStatus.DEAD_LETTER,
+          failedAt: new Date(),
+          error: errorDetails,
+        },
+      },
+      { new: true }
+    );
+
+    if (!updatedJob) {
+      logger.info(`Job '${mongoJob.jobId}' was already transitioned to DEAD_LETTER concurrently. Skipping.`);
+      return;
+    }
+
+    // Synchronize local document status
     mongoJob.status = JobStatus.DEAD_LETTER;
-    mongoJob.failedAt = new Date();
+    mongoJob.failedAt = updatedJob.failedAt;
     mongoJob.error = errorDetails;
 
     // Update the last execution record if present
@@ -59,11 +88,13 @@ export class DlqService {
         level: 'error',
         message: `Job exhausted all ${mongoJob.maxAttempts} attempts. Quarantined to Dead-Letter Queue. Reason: ${sanitizedMessage}`,
       });
+      await JobModel.updateOne(
+        { _id: mongoJob._id },
+        { $set: { executions: mongoJob.executions } }
+      );
     }
 
-    await mongoJob.save();
-
-    // Mirror quarantined record into BullMQ DLQ for queue-level inspection if Redis is connected
+    // 3. Mirror quarantined record into BullMQ DLQ with deterministic jobId to prevent duplicates
     try {
       const redis = getRedisClient();
       if (redis.status === 'ready' || redis.status === 'connect') {
@@ -80,7 +111,7 @@ export class DlqService {
             quarantinedAt: new Date().toISOString(),
           },
           {
-            jobId: `dlq_${mongoJob.jobId}_${Date.now()}`,
+            jobId: `dlq_${mongoJob.jobId}`, // Deterministic BullMQ ID prevents duplicate DLQ records
             removeOnComplete: 1000,
             removeOnFail: false,
           }
@@ -96,6 +127,8 @@ export class DlqService {
 
   /**
    * Manually redrives a quarantined DEAD_LETTER or FAILED job back into active processing.
+   * Atomic state transitions prevent concurrent redrive requests from racing.
+   * State is restored to previous status if Redis enqueueing fails.
    */
   public async redriveJob(
     identifier: string,
@@ -116,7 +149,10 @@ export class DlqService {
     }
 
     // Ownership check for non-admin operators
-    if (operatorRole !== UserRole.ADMIN && job.userId.toString() !== operatorUserId) {
+    const userObj = job.userId as unknown as { _id?: mongoose.Types.ObjectId | string };
+    const jobOwnerId = userObj?._id ? userObj._id.toString() : job.userId.toString();
+
+    if (operatorRole !== UserRole.ADMIN && jobOwnerId !== operatorUserId) {
       throw new AppError('Access forbidden: You do not have permission to redrive this job', 403, 'FORBIDDEN');
     }
 
@@ -128,19 +164,58 @@ export class DlqService {
       );
     }
 
-    // Reset attempt counter & error state for fresh execution
-    job.attemptsMade = 0;
-    job.status = JobStatus.QUEUED;
-    job.progress = 0;
-    job.set('error', undefined);
-    job.completedAt = undefined;
-    job.failedAt = undefined;
-    job.cancelledAt = undefined;
-    job.scheduledAt = undefined;
+    const previousStatus = job.status;
+    const previousAttempts = job.attemptsMade;
+
+    // Atomically claim redrive transition (prevents concurrent redrives from racing!)
+    const claimedJob = await JobModel.findOneAndUpdate(
+      {
+        _id: job._id,
+        status: { $in: [JobStatus.DEAD_LETTER, JobStatus.FAILED] },
+      },
+      {
+        $set: {
+          status: JobStatus.QUEUED,
+          attemptsMade: 0,
+          progress: 0,
+        },
+        $unset: {
+          error: 1,
+          completedAt: 1,
+          failedAt: 1,
+          cancelledAt: 1,
+          scheduledAt: 1,
+        },
+      },
+      { new: true }
+    );
+
+    if (!claimedJob) {
+      throw new AppError(
+        `Job '${job.jobId}' is currently being redriven or is no longer in DEAD_LETTER / FAILED state.`,
+        409,
+        'CONFLICT'
+      );
+    }
+
+    // Remove any stale BullMQ job from Redis so old and new jobs cannot execute concurrently
+    try {
+      const redis = getRedisClient();
+      if (redis.status === 'ready' || redis.status === 'connect') {
+        const q = queueService.getQueue(claimedJob.queueName || 'default');
+        const existingBullJob = await q.getJob(claimedJob.bullJobId || claimedJob.jobId);
+        if (existingBullJob) {
+          await existingBullJob.remove();
+          logger.info(`Removed stale BullMQ job '${existingBullJob.id}' prior to redrive.`);
+        }
+      }
+    } catch (removeErr) {
+      logger.warn(`Could not remove stale BullMQ job before redrive:`, removeErr);
+    }
 
     // Append audit log to execution history
     const redriveLog = {
-      attemptNumber: (job.executions.length || 0) + 1,
+      attemptNumber: (claimedJob.executions.length || 0) + 1,
       workerId: 'dlq-redrive-controller',
       status: 'PROCESSING' as const,
       startedAt: new Date().toISOString(),
@@ -148,19 +223,40 @@ export class DlqService {
         {
           timestamp: new Date().toISOString(),
           level: 'info' as const,
-          message: `Job redriven manually from DEAD_LETTER by operator '${operatorUserId}'`,
+          message: `Job redriven manually from ${previousStatus} by operator '${operatorUserId}'`,
         },
       ],
     };
-    job.executions.push(redriveLog);
+    claimedJob.executions.push(redriveLog);
 
-    // Re-dispatch into primary BullMQ queue
-    const bullJobId = await queueService.addJob(job);
-    job.bullJobId = bullJobId;
-    await job.save();
+    // Re-dispatch into primary BullMQ queue with atomic state rollback on Redis interruption
+    try {
+      const bullJobId = await queueService.addJob(claimedJob);
+      claimedJob.bullJobId = bullJobId;
+      await claimedJob.save();
+    } catch (redisErr) {
+      // Revert MongoDB status back to previous dead-letter/failed state to preserve consistency
+      claimedJob.status = previousStatus;
+      claimedJob.attemptsMade = previousAttempts;
+      claimedJob.failedAt = new Date();
+      claimedJob.error = {
+        message: `Redrive failed due to queue infrastructure error: ${(redisErr as Error).message}`,
+        failedAt: new Date(),
+      };
+      await claimedJob.save();
+      logger.error(
+        `Redis failure during redrive of job '${claimedJob.jobId}'. State restored to ${previousStatus}:`,
+        redisErr
+      );
+      throw new AppError(
+        `Failed to enqueue redriven job to Redis: ${(redisErr as Error).message}`,
+        503,
+        'SERVICE_UNAVAILABLE'
+      );
+    }
 
-    logger.info(`Job '${job.jobId}' successfully redriven into queue '${job.queueName}' by operator '${operatorUserId}'.`);
-    return job;
+    logger.info(`Job '${claimedJob.jobId}' successfully redriven into queue '${claimedJob.queueName}' by operator '${operatorUserId}'.`);
+    return claimedJob;
   }
 
   /**
@@ -171,17 +267,22 @@ export class DlqService {
     operatorUserId: string = 'system',
     operatorRole: UserRole = UserRole.ADMIN
   ): Promise<{ redrivenCount: number; jobIds: string[] }> {
+    const cleanQueueName =
+      typeof queueName === 'string' && queueName.trim().length > 0 ? queueName.trim() : undefined;
+
     const filter: Record<string, unknown> = {
       status: { $in: [JobStatus.DEAD_LETTER, JobStatus.FAILED] },
     };
 
-    if (queueName) {
-      filter.queueName = queueName;
+    if (cleanQueueName) {
+      filter.queueName = cleanQueueName;
     }
 
     // Non-admin can only redrive their own jobs
     if (operatorRole !== UserRole.ADMIN) {
-      filter.userId = new mongoose.Types.ObjectId(operatorUserId);
+      filter.userId = mongoose.Types.ObjectId.isValid(operatorUserId)
+        ? new mongoose.Types.ObjectId(operatorUserId)
+        : operatorUserId;
     }
 
     const deadLetterJobs = await JobModel.find(filter).select('_id jobId');
@@ -215,7 +316,9 @@ export class DlqService {
     };
 
     if (userRole !== UserRole.ADMIN) {
-      matchFilter.userId = new mongoose.Types.ObjectId(userId);
+      matchFilter.userId = mongoose.Types.ObjectId.isValid(userId)
+        ? new mongoose.Types.ObjectId(userId)
+        : userId;
     }
 
     const aggregated = await JobModel.aggregate([
