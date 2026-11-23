@@ -1,8 +1,9 @@
 import os from 'os';
 import { WorkerModel, IWorkerDocument } from '../../models/worker.model.js';
-import { WorkerStatus } from '@taskflow/shared';
+import { WorkerStatus, SocketEventName } from '@taskflow/shared';
 import { getRedisClient } from '../../config/redis.js';
 import { logger } from '../logging/logger.js';
+import { eventPublisher } from '../socket/event-publisher.js';
 
 export interface SystemMetricsSnapshot {
   rssMemoryBytes: number;
@@ -83,6 +84,21 @@ export class WorkerHeartbeatService {
 
     logger.info(`WorkerHeartbeatService: Registered worker '${workerId}' in registry.`);
 
+    const initialMetrics = this.getSystemMetrics();
+    await eventPublisher.publishWorkerTelemetry(SocketEventName.WORKER_REGISTERED, {
+      workerId,
+      status: WorkerStatus.HEALTHY,
+      activeJobs: getActiveJobCount(),
+      concurrency,
+      queues,
+      lastHeartbeat: new Date().toISOString(),
+      metrics: {
+        memoryRssBytes: initialMetrics.rssMemoryBytes,
+        heapUsedBytes: initialMetrics.heapUsedBytes,
+        cpuPercent: initialMetrics.cpuPercent,
+      },
+    });
+
     if (this.heartbeatInterval) {
       clearInterval(this.heartbeatInterval);
     }
@@ -134,6 +150,20 @@ export class WorkerHeartbeatService {
           systemMetrics: metrics,
         }
       );
+
+      await eventPublisher.publishWorkerTelemetry(SocketEventName.WORKER_HEARTBEAT, {
+        workerId,
+        status: WorkerStatus.HEALTHY,
+        activeJobs,
+        concurrency: 0,
+        queues: [],
+        lastHeartbeat: now.toISOString(),
+        metrics: {
+          memoryRssBytes: metrics.rssMemoryBytes,
+          heapUsedBytes: metrics.heapUsedBytes,
+          cpuPercent: metrics.cpuPercent,
+        },
+      });
     } catch (err) {
       logger.warn(`Failed to update worker '${workerId}' heartbeat in MongoDB:`, err);
     }
@@ -167,6 +197,14 @@ export class WorkerHeartbeatService {
         }
       );
       logger.info(`WorkerHeartbeatService: Worker '${workerId}' marked as DEAD on shutdown.`);
+      await eventPublisher.publishWorkerTelemetry(SocketEventName.WORKER_UNREGISTERED, {
+        workerId,
+        status: WorkerStatus.DEAD,
+        activeJobs: 0,
+        concurrency: 0,
+        queues: [],
+        lastHeartbeat: new Date().toISOString(),
+      });
     } catch (err) {
       logger.error(`Error marking worker '${workerId}' as dead in MongoDB:`, err);
     }
@@ -215,6 +253,15 @@ export class WorkerHeartbeatService {
         logger.info(
           `Worker Watchdog: Flagged ${result.degraded} degraded and ${result.dead} dead workers.`
         );
+
+        await eventPublisher.publishWorkerTelemetry(SocketEventName.WORKER_STATUS, {
+          workerId: 'fleet',
+          status: result.dead > 0 ? WorkerStatus.DEAD : WorkerStatus.DEGRADED,
+          activeJobs: 0,
+          concurrency: 0,
+          queues: [],
+          lastHeartbeat: new Date().toISOString(),
+        });
       }
     } catch (err) {
       logger.error('Error during stale worker detection scan:', err);

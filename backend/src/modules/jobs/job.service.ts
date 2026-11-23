@@ -1,7 +1,7 @@
 import crypto from 'node:crypto';
 import mongoose, { Types } from 'mongoose';
 import { JobModel, IJobDocument } from '../../models/job.model.js';
-import { JobStatus, UserRole } from '@taskflow/shared';
+import { JobStatus, UserRole, SocketEventName } from '@taskflow/shared';
 import { CreateJobDTO, ListJobsQueryDTO } from './job.validation.js';
 import { queueService } from '../../core/queue/queue.service.js';
 import { AppError, NotFoundError, ForbiddenError } from '../../core/errors/app-error.js';
@@ -9,6 +9,7 @@ import { logger } from '../../core/logging/logger.js';
 
 import { dlqService } from '../../core/queue/dlq.service.js';
 import { workerManager } from '../../core/worker/worker-manager.js';
+import { eventPublisher } from '../../core/socket/event-publisher.js';
 
 export interface PaginatedJobsResult {
   jobs: IJobDocument[];
@@ -80,12 +81,35 @@ export class JobService {
 
     await jobDoc.save();
 
+    // Broadcast job:submitted event
+    await eventPublisher.publishJobEvent(SocketEventName.JOB_SUBMITTED, {
+      jobId: jobDoc.jobId,
+      userId: jobDoc.userId.toString(),
+      queueName: jobDoc.queueName,
+      type: jobDoc.type,
+      status: jobDoc.status,
+      priority: jobDoc.priority,
+      maxAttempts: jobDoc.maxAttempts,
+      scheduledAt: jobDoc.scheduledAt?.toISOString(),
+    });
+
     // 3. Dispatch to BullMQ Queue
     try {
       const bullJobId = await queueService.addJob(jobDoc);
       jobDoc.bullJobId = bullJobId;
       jobDoc.status = input.delayMs > 0 ? JobStatus.DELAYED : JobStatus.QUEUED;
       await jobDoc.save();
+
+      // Broadcast job:queued event
+      await eventPublisher.publishJobEvent(SocketEventName.JOB_QUEUED, {
+        jobId: jobDoc.jobId,
+        userId: jobDoc.userId.toString(),
+        queueName: jobDoc.queueName,
+        type: jobDoc.type,
+        status: jobDoc.status,
+        priority: jobDoc.priority,
+        maxAttempts: jobDoc.maxAttempts,
+      });
     } catch (err: unknown) {
       // If Redis is temporarily down, the job remains in PENDING state in MongoDB.
       // The JobReconciliationService will safely sweep and enqueue it once Redis recovers.
@@ -250,6 +274,18 @@ export class JobService {
     }
 
     await job.save();
+
+    // Broadcast job:cancelled event
+    await eventPublisher.publishJobEvent(SocketEventName.JOB_CANCELLED, {
+      jobId: job.jobId,
+      userId: job.userId.toString(),
+      queueName: job.queueName,
+      type: job.type,
+      status: JobStatus.CANCELLED,
+      cancelledAt: job.cancelledAt.toISOString(),
+      error: { message: cancellationNotice, code: 'JOB_CANCELLED' },
+    });
+
     logger.info(`Job '${job.jobId}' cancelled successfully by user '${userId}'.`);
     return job;
   }

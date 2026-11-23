@@ -1,6 +1,7 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { JobRecord, jobApiService } from '../../services/job.service';
 import { JobStatus } from '@taskflow/shared';
+import { useJobEvents } from '../../hooks/useJobEvents';
 import {
   X,
   RotateCcw,
@@ -27,8 +28,46 @@ export const JobDetailModal: React.FC<JobDetailModalProps> = ({
 }) => {
   const [isActionLoading, setIsActionLoading] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
+  const [liveLogs, setLiveLogs] = useState<Array<{ timestamp: string; message: string; level: string }>>([]);
+
+  const { progress: liveProgress, status: liveStatus, progressMessage } = useJobEvents({
+    jobId: isOpen && job ? job.jobId : undefined,
+    onProgress: (pct, msg) => {
+      if (msg) {
+        setLiveLogs((prev) => [
+          ...prev,
+          { timestamp: new Date().toISOString(), message: msg, level: 'info' },
+        ]);
+      }
+      if (job) {
+        onJobUpdated({
+          ...job,
+          progress: pct,
+        });
+      }
+    },
+    onStatusChange: (newStatus, payload) => {
+      if (job) {
+        onJobUpdated({
+          ...job,
+          status: newStatus,
+          progress: payload.progress !== undefined ? payload.progress : job.progress,
+          result: payload.result || job.result,
+          error: payload.error ? { message: payload.error.message } : job.error,
+        });
+      }
+    },
+  });
+
+  // Reset live logs when modal opens for a different job
+  useEffect(() => {
+    setLiveLogs([]);
+  }, [job?.jobId]);
 
   if (!isOpen || !job) return null;
+
+  const currentStatus = liveStatus || job.status;
+  const currentProgress = liveProgress !== null ? liveProgress : job.progress;
 
   const handleCancel = async () => {
     setIsActionLoading(true);
@@ -103,10 +142,10 @@ export const JobDetailModal: React.FC<JobDetailModalProps> = ({
             <div className="flex items-center space-x-3 mb-1.5">
               <span
                 className={`px-2.5 py-0.5 rounded-full text-xs font-semibold border ${getStatusBadge(
-                  job.status
+                  currentStatus
                 )}`}
               >
-                {job.status}
+                {currentStatus}
               </span>
               <span className={`text-xs font-bold ${getPriorityLabel(job.priority).color}`}>
                 {getPriorityLabel(job.priority).label}
@@ -136,20 +175,25 @@ export const JobDetailModal: React.FC<JobDetailModalProps> = ({
           <div>
             <div className="flex items-center justify-between text-xs font-semibold text-slate-400 mb-1.5">
               <span>Execution Progress</span>
-              <span className="text-white font-mono">{job.progress}%</span>
+              <span className="text-white font-mono">{currentProgress}%</span>
             </div>
             <div className="w-full h-2.5 bg-slate-950 rounded-full overflow-hidden border border-slate-800">
               <div
                 className={`h-full transition-all duration-300 ${
-                  job.status === JobStatus.COMPLETED
+                  currentStatus === JobStatus.COMPLETED
                     ? 'bg-emerald-500'
-                    : job.status === JobStatus.FAILED || job.status === JobStatus.DEAD_LETTER
+                    : currentStatus === JobStatus.FAILED || currentStatus === JobStatus.DEAD_LETTER
                     ? 'bg-rose-500'
                     : 'bg-indigo-500'
                 }`}
-                style={{ width: `${job.progress}%` }}
+                style={{ width: `${currentProgress}%` }}
               />
             </div>
+            {progressMessage && (
+              <div className="text-[11px] text-slate-400 font-mono mt-1 italic">
+                {progressMessage}
+              </div>
+            )}
           </div>
 
           {/* Metadata Grid */}
@@ -219,6 +263,30 @@ export const JobDetailModal: React.FC<JobDetailModalProps> = ({
               {JSON.stringify(job.payload, null, 2)}
             </pre>
           </div>
+
+          {/* Live Streaming Logs */}
+          {liveLogs.length > 0 && (
+            <div>
+              <div className="text-xs font-semibold uppercase tracking-wider text-slate-400 mb-2 flex items-center space-x-2">
+                <span className="relative flex h-2 w-2 mr-0.5">
+                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+                  <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
+                </span>
+                <span className="text-emerald-400 font-bold">Live Streamed Events ({liveLogs.length})</span>
+              </div>
+              <div className="bg-slate-950 p-3 rounded-xl border border-slate-800 font-mono text-[11px] space-y-1.5 max-h-40 overflow-y-auto">
+                {liveLogs.map((log, idx) => (
+                  <div key={idx} className="flex items-center space-x-2 text-slate-300">
+                    <span className="text-slate-500 text-[10px]">
+                      {new Date(log.timestamp).toLocaleTimeString()}
+                    </span>
+                    <span className="text-emerald-400 font-semibold">[STREAM]</span>
+                    <span>{log.message}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
 
           {/* Execution History */}
           {job.executions && job.executions.length > 0 && (

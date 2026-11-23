@@ -4,11 +4,12 @@ import { env } from '../../config/env.config.js';
 import { logger } from '../logging/logger.js';
 import { JobModel } from '../../models/job.model.js';
 import { processorRegistry } from './processor.registry.js';
-import { JobStatus, JobExecutionRecord } from '@taskflow/shared';
+import { JobStatus, JobExecutionRecord, SocketEventName } from '@taskflow/shared';
 import { sanitizePayload } from '../logging/log-sanitizer.js';
 import { backoffService } from '../queue/backoff.service.js';
 import { dlqService } from '../queue/dlq.service.js';
 import { AppError } from '../errors/app-error.js';
+import { eventPublisher } from '../socket/event-publisher.js';
 
 export class WorkerManager {
   private static instance: WorkerManager;
@@ -173,6 +174,19 @@ export class WorkerManager {
       mongoJob.executions.push(executionRecord);
       await mongoJob.save();
 
+      await eventPublisher.publishJobEvent(SocketEventName.JOB_STARTED, {
+        jobId: mongoJob.jobId,
+        userId: mongoJob.userId.toString(),
+        queueName: mongoJob.queueName,
+        type: mongoJob.type,
+        status: JobStatus.PROCESSING,
+        priority: mongoJob.priority,
+        attemptsMade: currentAttempt,
+        maxAttempts: mongoJob.maxAttempts,
+        workerId: this.workerId,
+        startedAt: mongoJob.startedAt?.toISOString(),
+      });
+
       // 4. Progress Updater Hook with cooperative cancellation check
       const updateProgress = async (percentage: number, logMessage?: string) => {
         try {
@@ -209,6 +223,16 @@ export class WorkerManager {
             }
           }
           await mongoJob.save();
+
+          await eventPublisher.publishProgress({
+            jobId: mongoJob.jobId,
+            userId: mongoJob.userId.toString(),
+            queueName: mongoJob.queueName,
+            progress: percentage,
+            message: logMessage,
+            workerId: this.workerId,
+            timestamp: new Date().toISOString(),
+          });
         } catch (err) {
           if ((err as { code?: string }).code === 'JOB_CANCELLED') {
             throw err;
@@ -260,6 +284,21 @@ export class WorkerManager {
           logger.info(`Job '${jobId}' was cancelled concurrently before completion. COMPLETED state avoided.`);
           return { cancelled: true, reason: 'Job cancelled concurrently before completion' };
         }
+
+        await eventPublisher.publishJobEvent(SocketEventName.JOB_COMPLETED, {
+          jobId: completedJob.jobId,
+          userId: completedJob.userId.toString(),
+          queueName: completedJob.queueName,
+          type: completedJob.type,
+          status: JobStatus.COMPLETED,
+          priority: completedJob.priority,
+          attemptsMade: currentAttempt,
+          maxAttempts: completedJob.maxAttempts,
+          progress: 100,
+          workerId: this.workerId,
+          result,
+          completedAt: completedJob.completedAt?.toISOString(),
+        });
 
         return result;
       } catch (err: unknown) {
@@ -321,6 +360,23 @@ export class WorkerManager {
 
           mongoJob.error = errorDetails;
           await mongoJob.save();
+
+          await eventPublisher.publishJobEvent(SocketEventName.JOB_RETRYING, {
+            jobId: mongoJob.jobId,
+            userId: mongoJob.userId.toString(),
+            queueName: mongoJob.queueName,
+            type: mongoJob.type,
+            status: JobStatus.RETRYING,
+            priority: mongoJob.priority,
+            attemptsMade: currentAttempt,
+            maxAttempts: mongoJob.maxAttempts,
+            workerId: this.workerId,
+            error: {
+              message: sanitizedMessage,
+              code: errorDetails.code,
+            },
+            scheduledAt: mongoJob.scheduledAt?.toISOString(),
+          });
           logger.warn(
             `Job '${jobId}' failed attempt ${currentAttempt}/${mongoJob.maxAttempts}. State set to RETRYING with ${nextRetryDelayMs}ms backoff delay.`
           );

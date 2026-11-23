@@ -1,6 +1,8 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { JobRecord, jobApiService } from '../../services/job.service';
-import { JobStatus } from '@taskflow/shared';
+import { JobStatus, SocketEventName } from '@taskflow/shared';
+import { useSocket } from '../../context/SocketContext';
+import { useJobEvents } from '../../hooks/useJobEvents';
 import {
   Play,
   RotateCcw,
@@ -52,11 +54,65 @@ export const JobList: React.FC = () => {
     }
   }, [activeTab, searchQuery, currentPage]);
 
+  const { isConnected, isReconnecting } = useSocket();
+  const wasReconnecting = useRef(false);
+
+  // Real-time job event listener: updates rows in-place instantly
+  useJobEvents({
+    onEvent: (envelope) => {
+      const data = envelope.data;
+      if (!data || !('jobId' in data)) return;
+      const jobId = data.jobId;
+
+      setJobs((prevJobs) => {
+        const index = prevJobs.findIndex((j) => j.jobId === jobId || j.id === jobId);
+        if (index === -1) {
+          if (envelope.eventType === SocketEventName.JOB_SUBMITTED && currentPage === 1) {
+            fetchJobs();
+          }
+          return prevJobs;
+        }
+
+        const existing = prevJobs[index];
+        const updated: JobRecord = { ...existing };
+
+        if ('status' in data && data.status) {
+          updated.status = data.status;
+        }
+        if ('progress' in data && data.progress !== undefined) {
+          updated.progress = data.progress;
+        }
+        if ('attemptsMade' in data && data.attemptsMade !== undefined) {
+          updated.attemptsMade = data.attemptsMade;
+        }
+
+        const newJobs = [...prevJobs];
+        newJobs[index] = updated;
+
+        // Keep detail modal updated if open for this job
+        if (selectedJob && (selectedJob.jobId === jobId || selectedJob.id === jobId)) {
+          setSelectedJob(updated);
+        }
+
+        return newJobs;
+      });
+    },
+  });
+
+  // Re-fetch automatically when socket reconnects after disconnection
+  useEffect(() => {
+    if (wasReconnecting.current && isConnected) {
+      fetchJobs();
+    }
+    wasReconnecting.current = isReconnecting;
+  }, [isConnected, isReconnecting, fetchJobs]);
+
   useEffect(() => {
     fetchJobs();
+    // Relaxed polling interval as real-time events handle immediate updates
     const interval = setInterval(() => {
       fetchJobs();
-    }, 5000); // Poll status every 5 seconds
+    }, 15000);
     return () => clearInterval(interval);
   }, [fetchJobs]);
 

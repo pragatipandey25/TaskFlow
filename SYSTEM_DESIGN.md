@@ -171,3 +171,30 @@ When Kubernetes or Docker stops a worker container (`SIGTERM` or `SIGINT`), in-f
    - `await mongoose.connection.close()`
    - `await redisClient.quit()`
 7. Process exits with code `0`.
+
+---
+
+### 2.8 Real-Time Telemetry & Cross-Process Event Streaming
+In a production deployment, worker processes run decoupled from API web instances. A worker in an external process cannot emit directly to an in-memory Socket.io server.
+
+**Distributed Event Flow & Throttling Architecture:**
+```mermaid
+sequenceDiagram
+    autonumber
+    actor Worker as Background Worker Process
+    participant Redis as Redis Pub/Sub (taskflow:events:stream)
+    participant API as API Server (SocketServer)
+    participant Client as React Dashboard (SocketService)
+
+    Worker->>Worker: updateProgress(45%, "Rendering...")
+    Worker->>Worker: Apply Throttling (250ms threshold)
+    Worker->>Redis: PUBLISH taskflow:events:stream { rooms, eventType, envelope }
+    Redis-->>API: Event delivered to subscribed API instances
+    API->>API: Route to targeted rooms (user:ID, job:ID)
+    API-->>Client: WebSocket frame (job:progress envelope)
+```
+
+1. **Cross-Process Pub/Sub**: Workers publish event envelopes to Redis channel `taskflow:events:stream`. All running API server nodes subscribe to this channel and route events into local Socket.io rooms.
+2. **Horizontal Scalability**: `@socket.io/redis-adapter` enables multiple API server instances to distribute WebSocket broadcasts across clients connected to different nodes.
+3. **Progress Rate Throttling**: Progress events (1%-99%) are limited to at most 1 emission per 250ms per job. Boundary values (0% started and 100% completed) are exempt from throttling to guarantee instant status responsiveness.
+4. **Resilient Reconnection**: `SocketService` on the frontend tracks active room memberships and automatically issues resubscription commands when the connection recovers after a transient network drop.

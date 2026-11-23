@@ -11,3 +11,4 @@ export * from './interfaces/queue.interface.js';
 export * from './interfaces/worker.interface.js';
 export * from './interfaces/api-response.interface.js';
 export * from './interfaces/user.interface.js';
+export * from './interfaces/socket-events.interface.js';

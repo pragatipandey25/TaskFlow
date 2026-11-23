@@ -652,3 +652,135 @@ All error responses adhere to a uniform structure:
     }
   }
   ```
+
+---
+
+## 7. Socket.io Real-Time Telemetry & Event Streaming API
+
+### 7.1 Connection & Handshake Authentication
+- **Endpoint**: `ws://<host>:<port>` (Socket.io protocol v4)
+- **Transports**: `websocket`, `polling` (fallback)
+- **Handshake Authentication**:
+  - Socket.io `auth` object: `{ "token": "<jwt_access_token>" }`
+  - Alternatively: HTTP header `Authorization: Bearer <jwt_access_token>`
+- **Handshake Validation**:
+  - The JWT is verified using the system `JWT_SECRET` and algorithm `HS256`.
+  - The user document is checked in MongoDB to ensure the account is active (`isActive: true`).
+  - Upon successful handshake, client automatically joins user-scoped rooms:
+    - `user:<userId>`
+    - `room:user:<userId>`
+    - `admin:telemetry` (if `role === 'admin'`)
+- **Connection Confirmation**:
+  Immediately upon connection, the server emits `system:connected`:
+  ```json
+  {
+    "eventId": "3c90e21a-e7c8-47c0-99ec-2895f5431682",
+    "eventType": "system:connected",
+    "timestamp": "2026-11-23T04:15:27.424Z",
+    "version": "1.0",
+    "data": {
+      "socketId": "CeVQSlEvshESLUeiAAAJ",
+      "userId": "672bda0141f1a10192e4b301",
+      "role": "developer",
+      "serverTime": "2026-11-23T04:15:27.424Z"
+    }
+  }
+  ```
+
+---
+
+### 7.2 Client-to-Server Subscription Commands
+
+#### Subscribe to Specific Job Room
+- **Emit**: `subscribe:job`
+- **Payload**: `{ "jobId": "job_1234567890_abc" }`
+- **Authorization**:
+  - Developers can only subscribe to jobs they own.
+  - Admins can subscribe to any job across users.
+  - Unauthorized subscription requests emit `system:error` with `{ "code": "FORBIDDEN" }`.
+- **Acknowledgement**: `{ "success": true, "jobId": "job_1234567890_abc" }`
+
+#### Unsubscribe from Job Room
+- **Emit**: `unsubscribe:job`
+- **Payload**: `{ "jobId": "job_1234567890_abc" }`
+- **Acknowledgement**: `{ "success": true, "jobId": "job_1234567890_abc" }`
+
+#### Subscribe to Queue Metrics
+- **Emit**: `subscribe:queue`
+- **Payload**: `{ "queueName": "default" }`
+- **Acknowledgement**: `{ "success": true, "queueName": "default" }`
+
+#### Unsubscribe from Queue Metrics
+- **Emit**: `unsubscribe:queue`
+- **Payload**: `{ "queueName": "default" }`
+
+#### Subscribe to Administrative Fleet Telemetry
+- **Emit**: `subscribe:admin:telemetry`
+- **Authorization**: Requires `admin` role. Returns `{ "code": "FORBIDDEN" }` for non-admin callers.
+
+---
+
+### 7.3 Standard Event Envelope Schema
+All server-sent events conform to the standardized envelope:
+```typescript
+interface SocketEventEnvelope<T> {
+  eventId: string;       // Unique UUID for event deduplication
+  eventType: string;     // SocketEventName enum string
+  timestamp: string;     // ISO 8601 UTC timestamp
+  version: "1.0";        // Event schema version
+  data: T;               // Strongly typed payload
+}
+```
+
+---
+
+### 7.4 Server-to-Client Event Catalog
+
+#### 1. Job Lifecycle Events
+Emitted to `user:<userId>` and `job:<jobId>` rooms:
+
+| Event Name | Description | Key Payload Fields |
+| :--- | :--- | :--- |
+| `job:submitted` | Job received & persisted to MongoDB (`PENDING`) | `jobId`, `userId`, `type`, `status`, `priority` |
+| `job:queued` | Job enqueued into BullMQ / Redis | `jobId`, `queueName`, `status: 'QUEUED'` |
+| `job:started` | Worker acquired lock and began execution | `jobId`, `workerId`, `attemptsMade`, `startedAt` |
+| `job:progress` | Incremental execution progress update | `jobId`, `progress` (0-100), `message`, `workerId` |
+| `job:retrying` | Transient failure scheduled for backoff retry | `jobId`, `attemptsMade`, `scheduledAt`, `error` |
+| `job:completed` | Execution succeeded with final result | `jobId`, `status: 'COMPLETED'`, `progress: 100`, `result` |
+| `job:failed` | Terminal failure before DLQ routing | `jobId`, `status: 'FAILED'`, `error` |
+| `job:cancelled` | Job cancelled by operator | `jobId`, `status: 'CANCELLED'`, `cancelledAt` |
+| `job:dead-lettered` | Max attempts exhausted; quarantined in DLQ | `jobId`, `status: 'DEAD_LETTER'`, `error` |
+
+#### 2. Progress Throttling Rule
+To prevent WebSocket buffer exhaustion during high-frequency worker loops, `job:progress` updates between 1% and 99% are rate-limited to a maximum of 1 update per 250ms per job. Boundary values (0% and 100%) bypass throttling and are dispatched immediately.
+
+#### 3. Queue Telemetry Event: `queue:stats`
+Emitted to `queue:<queueName>` and `admin:telemetry`:
+```json
+{
+  "eventId": "f290d810-7bc4-4f01-9f77-9a4f479d2b91",
+  "eventType": "queue:stats",
+  "timestamp": "2026-11-23T04:15:28.028Z",
+  "version": "1.0",
+  "data": {
+    "queueName": "default",
+    "waiting": 12,
+    "active": 4,
+    "delayed": 2,
+    "completed": 1290,
+    "failed": 3,
+    "paused": false,
+    "timestamp": "2026-11-23T04:15:28.028Z"
+  }
+}
+```
+
+#### 4. Worker Telemetry Events
+Emitted to `admin:telemetry`:
+
+| Event Name | Description | Key Payload Fields |
+| :--- | :--- | :--- |
+| `worker:registered` | Worker process spawned and registered in MongoDB | `workerId`, `hostname`, `pid`, `concurrency`, `queues` |
+| `worker:heartbeat` | Periodic worker liveness ping | `workerId`, `activeJobs`, `metrics` (CPU, memory) |
+| `worker:status` | Worker degraded or flagged by watchdog | `workerId`, `status: 'degraded' \| 'dead'` |
+| `worker:unregistered` | Worker process cleanly terminated on shutdown | `workerId`, `status: 'dead'`, `lastHeartbeat` |

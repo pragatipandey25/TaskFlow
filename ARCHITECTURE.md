@@ -138,11 +138,18 @@ flowchart LR
   - `MetricAggregator`: Queries BullMQ queue states (waiting, active, delayed, failed, completed) and runs optimized MongoDB aggregation pipelines over `JobExecution` logs.
   - `LatencyCalculator`: Computes P50, P90, and P99 execution durations and queue waiting times.
 
-### Module 10: Real-Time Notification Module
-- **Purpose**: Dispatches instantaneous job lifecycle notifications to active dashboard sessions over WebSockets.
+### Module 10: Real-Time Notification & Telemetry Module
+- **Purpose**: Dispatches instantaneous job lifecycle notifications, live progress telemetry, queue depth statistics, and worker fleet health to connected dashboard sessions over WebSockets with zero HTTP polling.
 - **Components**:
-  - `SocketGateway`: Initialized with the `@socket.io/redis-adapter` for multi-node broadcast compatibility.
-  - `EventBroadcaster`: Listens to worker event streams (active, progress, completed, failed) and emits targeted events to user/queue rooms (e.g., `room:user:USER_ID`, `room:job:JOB_ID`).
+  - `SocketServer`: Centralized Socket.io gateway attached to the Express HTTP server with strict JWT handshake authentication, user deactivation checks, and room authorization enforcement.
+  - `@socket.io/redis-adapter`: Enables seamless multi-node horizontal scaling across API server instances, sharing room states with automatic in-memory fallback when Redis is unconfigured or offline.
+  - `EventPublisher`: Singleton domain publisher dispatching standardized `SocketEventEnvelope` payloads. Bridges decoupled worker processes to API WebSocket clients via Redis Pub/Sub channel `taskflow:events:stream`.
+  - `ProgressThrottler`: Enforces rate throttling on high-frequency progress updates (max 1 update per 250ms per job) to safeguard WebSocket buffers while guaranteeing immediate dispatch of 0% and 100% boundary milestones.
+  - Room Security Model:
+    - `user:{userId}` & `room:user:{userId}`: Automatically joined upon verified handshake; isolates private job events.
+    - `job:{jobId}` & `room:job:{jobId}`: Requires verified ownership or `admin` role prior to membership.
+    - `admin:telemetry` & `room:admin:telemetry`: Restricted to `admin` role; delivers global worker heartbeats and system metrics.
+    - `queue:{queueName}`: Delivers real-time queue depth counters (`waiting`, `active`, `delayed`, `failed`, `completed`).
 
 ---
 

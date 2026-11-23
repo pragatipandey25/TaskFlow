@@ -1,11 +1,13 @@
 import React from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { useAuth } from '../../context/AuthContext';
+import { useSocket } from '../../context/SocketContext';
 import { Activity, LayoutDashboard, LogOut, Shield, User } from 'lucide-react';
 import { UserRole } from '@taskflow/shared';
 
 export const Navbar: React.FC = () => {
   const { user, logout, isAuthenticated } = useAuth();
+  const { isConnected, isReconnecting } = useSocket();
   const navigate = useNavigate();
 
   const handleLogout = async () => {
@@ -57,6 +59,48 @@ export const Navbar: React.FC = () => {
         </div>
 
         <div className="flex items-center space-x-4">
+          {isAuthenticated && (
+            <div
+              className={`flex items-center px-2.5 py-1 rounded-full text-xs font-medium border ${
+                isConnected
+                  ? 'bg-emerald-950/50 text-emerald-400 border-emerald-800/60'
+                  : isReconnecting
+                  ? 'bg-amber-950/50 text-amber-400 border-amber-800/60'
+                  : 'bg-slate-800/50 text-slate-400 border-slate-700/60'
+              }`}
+              title={
+                isConnected
+                  ? 'Real-time WebSocket connected'
+                  : isReconnecting
+                  ? 'Reconnecting to real-time events...'
+                  : 'Real-time WebSocket disconnected'
+              }
+            >
+              {isConnected ? (
+                <>
+                  <span className="relative flex h-2 w-2 mr-1.5">
+                    <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+                    <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
+                  </span>
+                  <span className="hidden sm:inline">Live</span>
+                </>
+              ) : isReconnecting ? (
+                <>
+                  <span className="relative flex h-2 w-2 mr-1.5">
+                    <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-amber-400 opacity-75"></span>
+                    <span className="relative inline-flex rounded-full h-2 w-2 bg-amber-500"></span>
+                  </span>
+                  <span className="hidden sm:inline">Reconnecting</span>
+                </>
+              ) : (
+                <>
+                  <span className="inline-flex rounded-full h-2 w-2 bg-slate-500 mr-1.5"></span>
+                  <span className="hidden sm:inline">Offline</span>
+                </>
+              )}
+            </div>
+          )}
+
           {isAuthenticated && user ? (
             <div className="flex items-center space-x-4">
               <div className="flex items-center space-x-2.5">

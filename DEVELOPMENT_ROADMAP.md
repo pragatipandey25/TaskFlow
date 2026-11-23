@@ -175,9 +175,9 @@ Enable sub-second UI updates for job status changes, queue throughput, and worke
 - Connect BullMQ worker event listeners (`active`, `progress`, `completed`, `failed`) to Redis Pub/Sub channels that broadcast directly into Socket.io rooms.
 
 ### 6.3 Acceptance Criteria
-- [ ] Clients receive instantaneous WebSocket events when a job transitions state (`active`, `completed`, `failed`).
-- [ ] Long-running jobs stream numeric progress updates (`job:progress`) without polling HTTP endpoints.
-- [ ] Disconnections automatically attempt exponential reconnection with state synchronization on rejoin.
+- [x] Clients receive instantaneous WebSocket events when a job transitions state (`active`, `completed`, `failed`).
+- [x] Long-running jobs stream numeric progress updates (`job:progress`) without polling HTTP endpoints.
+- [x] Disconnections automatically attempt exponential reconnection with state synchronization on rejoin.
 
 ---
 

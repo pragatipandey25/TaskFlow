@@ -4,6 +4,7 @@ import { env } from './config/env.config.js';
 import { logger } from './core/logging/logger.js';
 import { connectDatabase, disconnectDatabase } from './config/database.js';
 import { disconnectRedis } from './config/redis.js';
+import { socketServer } from './core/socket/socket.server.js';
 
 async function bootstrap(): Promise<void> {
   const app = createApp();
@@ -14,6 +15,13 @@ async function bootstrap(): Promise<void> {
     await connectDatabase();
   } catch (err) {
     logger.warn('Continuing startup without immediate MongoDB connection (will retry)...');
+  }
+
+  // Initialize Socket.io Real-Time Telemetry Gateway
+  try {
+    await socketServer.init(server);
+  } catch (err) {
+    logger.error('Failed to initialize Socket.io server:', err);
   }
 
   server.listen(env.PORT, () => {
@@ -29,6 +37,7 @@ async function bootstrap(): Promise<void> {
     server.close(async () => {
       logger.info('HTTP server closed');
       try {
+        await socketServer.close();
         await disconnectDatabase();
         await disconnectRedis();
         logger.info('Graceful shutdown completed successfully');

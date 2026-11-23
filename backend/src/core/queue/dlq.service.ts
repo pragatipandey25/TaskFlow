@@ -1,10 +1,11 @@
 import { JobModel, IJobDocument } from '../../models/job.model.js';
 import { queueService } from './queue.service.js';
-import { JobStatus, UserRole } from '@taskflow/shared';
+import { JobStatus, UserRole, SocketEventName } from '@taskflow/shared';
 import { logger } from '../logging/logger.js';
 import { sanitizePayload } from '../logging/log-sanitizer.js';
 import { AppError, NotFoundError } from '../errors/app-error.js';
 import { getRedisClient } from '../../config/redis.js';
+import { eventPublisher } from '../socket/event-publisher.js';
 import mongoose from 'mongoose';
 
 export class DlqService {
@@ -123,6 +124,24 @@ export class DlqService {
     } catch (dlqErr) {
       logger.warn(`Failed to mirror quarantined job '${mongoJob.jobId}' into BullMQ DLQ:`, dlqErr);
     }
+
+    // 4. Publish real-time job:dead-lettered event
+    await eventPublisher.publishJobEvent(SocketEventName.JOB_DEAD_LETTERED, {
+      jobId: mongoJob.jobId,
+      userId: (mongoJob.userId as unknown as { _id?: mongoose.Types.ObjectId | string })?._id
+        ? (mongoJob.userId as unknown as { _id?: mongoose.Types.ObjectId | string })._id!.toString()
+        : mongoJob.userId.toString(),
+      queueName: mongoJob.queueName,
+      type: mongoJob.type,
+      status: JobStatus.DEAD_LETTER,
+      attemptsMade: mongoJob.attemptsMade,
+      maxAttempts: mongoJob.maxAttempts,
+      failedAt: mongoJob.failedAt?.toISOString(),
+      error: {
+        message: errorDetails.message,
+        code: errorDetails.code,
+      },
+    });
   }
 
   /**
@@ -254,6 +273,18 @@ export class DlqService {
         'SERVICE_UNAVAILABLE'
       );
     }
+
+    // Publish job:queued event on successful redrive
+    await eventPublisher.publishJobEvent(SocketEventName.JOB_QUEUED, {
+      jobId: claimedJob.jobId,
+      userId: jobOwnerId,
+      queueName: claimedJob.queueName,
+      type: claimedJob.type,
+      status: JobStatus.QUEUED,
+      priority: claimedJob.priority,
+      attemptsMade: 0,
+      maxAttempts: claimedJob.maxAttempts,
+    });
 
     logger.info(`Job '${claimedJob.jobId}' successfully redriven into queue '${claimedJob.queueName}' by operator '${operatorUserId}'.`);
     return claimedJob;

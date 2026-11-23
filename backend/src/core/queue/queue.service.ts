@@ -3,6 +3,7 @@ import { getRedisConnectionOptions } from '../../config/redis.js';
 import { env } from '../../config/env.config.js';
 import { logger } from '../logging/logger.js';
 import { IJobDocument } from '../../models/job.model.js';
+import { eventPublisher } from '../socket/event-publisher.js';
 
 export interface QueueStatistics {
   waiting: number;
@@ -54,7 +55,8 @@ export class QueueService {
    * Enqueues a job from MongoDB into BullMQ with configured priorities, delays, and backoff.
    */
   public async addJob(job: IJobDocument): Promise<string> {
-    const queue = this.getQueue(job.queueName || env.DEFAULT_QUEUE_NAME);
+    const queueName = job.queueName || env.DEFAULT_QUEUE_NAME;
+    const queue = this.getQueue(queueName);
 
     const bullOptions: JobsOptions = {
       jobId: job.jobId,
@@ -80,6 +82,25 @@ export class QueueService {
     );
 
     logger.info(`BullMQ Enqueued Job: '${job.name}' [BullID: ${bullJob.id}, MongoID: ${job.jobId}]`);
+
+    // Non-blocking asynchronous queue telemetry broadcast
+    this.getQueueMetrics(queueName)
+      .then((metrics) => {
+        return eventPublisher.publishQueueTelemetry({
+          queueName,
+          waiting: metrics.waiting,
+          active: metrics.active,
+          delayed: metrics.delayed,
+          failed: metrics.failed,
+          completed: metrics.completed,
+          paused: metrics.paused,
+          timestamp: new Date().toISOString(),
+        });
+      })
+      .catch((err) => {
+        logger.debug(`Could not publish queue telemetry after addJob: ${err.message}`);
+      });
+
     return bullJob.id || job.jobId;
   }
 

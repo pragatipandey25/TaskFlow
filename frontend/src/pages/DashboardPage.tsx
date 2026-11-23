@@ -1,12 +1,13 @@
 import React, { useEffect, useState, useCallback } from 'react';
 import { useAuth } from '../context/AuthContext';
+import { useSocket } from '../context/SocketContext';
 import { Navbar } from '../components/layout/Navbar';
 import { JobList } from '../components/jobs/JobList';
 import { QueueMetricsChart } from '../components/observability/QueueMetricsChart';
 import { WorkerFleetCard } from '../components/observability/WorkerFleetCard';
 import { queueService, QueueListItem } from '../services/queue.service';
 import { workerService } from '../services/worker.service';
-import { WorkerResponse } from '@taskflow/shared';
+import { WorkerResponse, SocketEventName, QueueTelemetryPayload, WorkerTelemetryPayload, UserRole } from '@taskflow/shared';
 import { Shield, Clock, Key, Activity } from 'lucide-react';
 import { Link } from 'react-router-dom';
 
@@ -30,6 +31,54 @@ export const DashboardPage: React.FC = () => {
       setIsObservabilityLoading(false);
     }
   }, []);
+
+  const { socket, isConnected } = useSocket();
+
+  useEffect(() => {
+    if (user?.role === UserRole.ADMIN && isConnected) {
+      socket.subscribeAdminTelemetry();
+    }
+  }, [user?.role, isConnected, socket]);
+
+  useEffect(() => {
+    const handleQueueTelemetry = (envelope: { data: QueueTelemetryPayload }) => {
+      const qData = envelope.data;
+      setQueues((prev) =>
+        prev.map((q) =>
+          q.name === qData.queueName
+            ? {
+                ...q,
+                jobCounts: {
+                  waiting: qData.waiting,
+                  active: qData.active,
+                  delayed: qData.delayed,
+                  failed: qData.failed,
+                  completed: qData.completed,
+                },
+              }
+            : q
+        )
+      );
+    };
+
+    const handleWorkerTelemetry = () => {
+      workerService.listWorkers().then(setWorkers).catch(() => {});
+    };
+
+    socket.on<QueueTelemetryPayload>(SocketEventName.QUEUE_STATS, handleQueueTelemetry);
+    socket.on<WorkerTelemetryPayload>(SocketEventName.WORKER_HEARTBEAT, handleWorkerTelemetry);
+    socket.on<WorkerTelemetryPayload>(SocketEventName.WORKER_REGISTERED, handleWorkerTelemetry);
+    socket.on<WorkerTelemetryPayload>(SocketEventName.WORKER_STATUS, handleWorkerTelemetry);
+    socket.on<WorkerTelemetryPayload>(SocketEventName.WORKER_UNREGISTERED, handleWorkerTelemetry);
+
+    return () => {
+      socket.off<QueueTelemetryPayload>(SocketEventName.QUEUE_STATS, handleQueueTelemetry);
+      socket.off<WorkerTelemetryPayload>(SocketEventName.WORKER_HEARTBEAT, handleWorkerTelemetry);
+      socket.off<WorkerTelemetryPayload>(SocketEventName.WORKER_REGISTERED, handleWorkerTelemetry);
+      socket.off<WorkerTelemetryPayload>(SocketEventName.WORKER_STATUS, handleWorkerTelemetry);
+      socket.off<WorkerTelemetryPayload>(SocketEventName.WORKER_UNREGISTERED, handleWorkerTelemetry);
+    };
+  }, [socket]);
 
   useEffect(() => {
     fetchObservabilityData();
