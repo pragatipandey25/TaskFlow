@@ -14,6 +14,7 @@ import { disconnectRedis } from '../../src/config/redis.js';
 import { UserModel } from '../../src/models/user.model.js';
 import { JobModel } from '../../src/models/job.model.js';
 import { TokenService } from '../../src/modules/auth/token.service.js';
+import { AuthService } from '../../src/modules/auth/auth.service.js';
 import { env } from '../../src/config/env.config.js';
 import { MiniRedisServer } from '../helpers/redis-mock-server.helper.js';
 import {
@@ -542,6 +543,93 @@ describe('Milestone 6: Distributed Reliability & Security Audit', () => {
       await new Promise((r) => setTimeout(r, 250));
       expect(disconnected).toBe(true);
       expect(client.connected).toBe(false);
+    });
+
+    it('should disconnect socket when AuthService.logout is invoked and leave other users unaffected', async () => {
+      const clientA = await connectClient(devTokenA);
+      const clientB = await connectClient(devTokenB);
+
+      expect(clientA.connected).toBe(true);
+      expect(clientB.connected).toBe(true);
+
+      let disconnectedA = false;
+      let disconnectedB = false;
+      clientA.on('disconnect', () => {
+        disconnectedA = true;
+      });
+      clientB.on('disconnect', () => {
+        disconnectedB = true;
+      });
+
+      // Alice logs out
+      await AuthService.logout(undefined, devUserA._id.toString());
+
+      await new Promise((r) => setTimeout(r, 250));
+
+      expect(disconnectedA).toBe(true);
+      expect(clientA.connected).toBe(false);
+
+      // Bob's socket remains active and unaffected
+      expect(disconnectedB).toBe(false);
+      expect(clientB.connected).toBe(true);
+    });
+
+    it('should disconnect socket when AuthService.deactivateUser is invoked and forbid reconnection', async () => {
+      const client = await connectClient(devTokenA);
+      expect(client.connected).toBe(true);
+
+      let disconnected = false;
+      client.on('disconnect', () => {
+        disconnected = true;
+      });
+
+      // Admin deactivates Alice's account
+      await AuthService.deactivateUser(devUserA._id.toString());
+
+      await new Promise((r) => setTimeout(r, 250));
+      expect(disconnected).toBe(true);
+      expect(client.connected).toBe(false);
+
+      // Reconnection attempt with same token must be rejected
+      await expect(connectClient(devTokenA)).rejects.toThrow(/User account is deactivated/);
+    });
+
+    it('should deliver queue telemetry to authorized queue subscribers and NOT to non-subscribers', async () => {
+      const clientA = await connectClient(devTokenA);
+      const clientB = await connectClient(devTokenB);
+
+      // Alice subscribes to queue 'video-encoding'
+      await new Promise<void>((resolve) => {
+        clientA.emit('subscribe:queue', { queueName: 'video-encoding' }, () => resolve());
+      });
+
+      const receivedA: any[] = [];
+      const receivedB: any[] = [];
+
+      clientA.on(SocketEventName.QUEUE_STATS, (env) => receivedA.push(env));
+      clientB.on(SocketEventName.QUEUE_STATS, (env) => receivedB.push(env));
+
+      // Publish queue telemetry for 'video-encoding'
+      await eventPublisher.publishQueueTelemetry({
+        queueName: 'video-encoding',
+        waitingCount: 5,
+        activeCount: 2,
+        completedCount: 100,
+        failedCount: 1,
+        delayedCount: 0,
+        paused: false,
+        throughputPerMinute: 45,
+        timestamp: new Date().toISOString(),
+      });
+
+      await new Promise((r) => setTimeout(r, 250));
+
+      expect(receivedA.length).toBe(1);
+      expect(receivedA[0].data.queueName).toBe('video-encoding');
+      expect(receivedA[0].data.waitingCount).toBe(5);
+
+      // Bob did not subscribe to this queue and receives nothing
+      expect(receivedB.length).toBe(0);
     });
 
     it('should allow Viewer to subscribe to queue metrics but prevent admin:telemetry access', async () => {

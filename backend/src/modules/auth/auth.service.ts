@@ -5,6 +5,7 @@ import { UserModel, hashPassword } from '../../models/user.model.js';
 import { RefreshTokenModel } from '../../models/refresh-token.model.js';
 import { RefreshTokenFamilyModel } from '../../models/refresh-token-family.model.js';
 import { TokenService } from './token.service.js';
+import { socketServer } from '../../core/socket/socket.server.js';
 import { AppError, ConflictError, UnauthorizedError, NotFoundError } from '../../core/errors/app-error.js';
 import { logger } from '../../core/logging/logger.js';
 
@@ -265,6 +266,9 @@ export class AuthService {
             await session.commitTransaction();
           }
 
+          // Disconnect active socket sessions for compromised token owner
+          socketServer.disconnectUser(existingToken.userId.toString());
+
           throw new UnauthorizedError('Invalid refresh token. Token reuse detected. Please log in again.');
         }
 
@@ -356,13 +360,16 @@ export class AuthService {
   }
 
   /**
-   * Revokes refresh token on user logout.
+   * Revokes refresh token on user logout and disconnects active socket connections.
    */
   public static async logout(rawRefreshToken?: string, userId?: string): Promise<void> {
+    let targetUserId = userId;
+
     if (rawRefreshToken) {
       const tokenHash = TokenService.hashToken(rawRefreshToken);
       const tokenRecord = await RefreshTokenModel.findOne({ tokenHash });
       if (tokenRecord) {
+        targetUserId = targetUserId || tokenRecord.userId.toString();
         // Invalidate entire family on explicit logout
         await RefreshTokenFamilyModel.updateOne(
           { familyId: tokenRecord.familyId },
@@ -384,6 +391,35 @@ export class AuthService {
         { $set: { isRevoked: true } }
       );
     }
+
+    if (targetUserId) {
+      socketServer.disconnectUser(targetUserId);
+    }
+  }
+
+  /**
+   * Deactivates an account, revoking all credentials and terminating active socket sessions.
+   */
+  public static async deactivateUser(userId: string): Promise<void> {
+    const user = await UserModel.findById(userId);
+    if (!user) {
+      throw new NotFoundError('User not found');
+    }
+
+    user.isActive = false;
+    await user.save();
+
+    await RefreshTokenFamilyModel.updateMany(
+      { userId: user._id },
+      { $set: { isRevoked: true, revokedReason: 'ACCOUNT_DEACTIVATED' } }
+    );
+    await RefreshTokenModel.updateMany(
+      { userId: user._id },
+      { $set: { isRevoked: true } }
+    );
+
+    socketServer.disconnectUser(user._id.toString());
+    logger.info(`User account deactivated and active sessions revoked: ${user.email} [${user._id}]`);
   }
 
   /**
@@ -399,6 +435,7 @@ export class AuthService {
 
   /**
    * Promotes or changes a user's role (Admin-only operation).
+   * Disconnects active socket connections so the client reconnects under the new role boundaries.
    */
   public static async updateUserRole(targetUserId: string, newRole: UserRole): Promise<UserProfileResponse> {
     const user = await UserModel.findById(targetUserId);
@@ -409,6 +446,7 @@ export class AuthService {
     user.role = newRole;
     await user.save();
 
+    socketServer.disconnectUser(user._id.toString());
     logger.info(`User role updated: ${user.email} [${user._id}] -> ${newRole}`);
     return user.toProfile();
   }
