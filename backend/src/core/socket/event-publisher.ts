@@ -78,13 +78,15 @@ export class EventPublisher {
     const now = Date.now();
     const lastEmitted = this.progressThrottleMap.get(payload.jobId) || 0;
 
-    // Throttle progress events between 1% and 99% to prevent socket flooding
+    // Throttle progress events between 1% and 99% to prevent socket flooding.
+    // Boundary updates (0% start, 100% completion) bypass rate-limiting unconditionally.
     const isBoundary = payload.progress <= 0 || payload.progress >= 100;
-    if (!isBoundary && now - lastEmitted < EventPublisher.PROGRESS_THROTTLE_MS) {
-      return;
+    if (!isBoundary) {
+      if (now - lastEmitted < EventPublisher.PROGRESS_THROTTLE_MS) {
+        return;
+      }
+      this.progressThrottleMap.set(payload.jobId, now);
     }
-
-    this.progressThrottleMap.set(payload.jobId, now);
 
     const sanitizedMessage = payload.message ? sanitizePayload(payload.message) : undefined;
     const sanitizedData: JobProgressPayload = {
@@ -155,16 +157,21 @@ export class EventPublisher {
 
   /**
    * Core dispatch pipeline:
-   * 1. Emits directly to local Socket.io if running in an API process.
-   * 2. Publishes to Redis Pub/Sub for cross-process delivery (worker -> API nodes).
+   * 1. Emits directly to Socket.io if running in an API process.
+   *    (If Redis adapter is active, Socket.io broadcasts to all cluster nodes automatically).
+   * 2. Publishes to Redis Pub/Sub for cross-process delivery when running in workers
+   *    or degraded mode without the Redis adapter.
    */
   private async dispatch(
     rooms: string[],
     eventType: SocketEventName | string,
     envelope: SocketEventEnvelope<unknown>
   ): Promise<void> {
-    // 1. In-process dispatch if Socket.io server is attached
     const io = socketServer.getIO();
+    const isDistributed = socketServer.isDistributedAdapter();
+    const instanceId = socketServer.getInstanceId();
+
+    // 1. In-process Socket.io emission
     if (io) {
       try {
         io.to(rooms).emit(eventType, envelope);
@@ -174,19 +181,25 @@ export class EventPublisher {
     }
 
     // 2. Cross-process Redis broadcast
-    try {
-      const redis = getRedisClient();
-      if (redis.status === 'ready' || redis.status === 'connect') {
-        const message = JSON.stringify({
-          rooms,
-          eventType,
-          envelope,
-        });
-        await redis.publish(SocketServer.REDIS_EVENT_CHANNEL, message);
+    // Dispatched when:
+    // a) Worker process has no io server (Worker -> API nodes)
+    // b) API running in degraded mode without Redis adapter
+    if (!io || !isDistributed) {
+      try {
+        const redis = getRedisClient();
+        if (redis.status === 'ready' || redis.status === 'connect') {
+          const message = JSON.stringify({
+            originId: instanceId,
+            rooms,
+            eventType,
+            envelope,
+          });
+          await redis.publish(SocketServer.REDIS_EVENT_CHANNEL, message);
+        }
+      } catch (err) {
+        // Do not allow Redis socket broadcast failures to crash worker or API logic
+        logger.warn(`Failed to publish event '${eventType}' to Redis stream:`, err);
       }
-    } catch (err) {
-      // Do not allow Redis socket broadcast failures to crash worker or API logic
-      logger.warn(`Failed to publish event '${eventType}' to Redis stream:`, err);
     }
   }
 }

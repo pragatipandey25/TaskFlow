@@ -40,6 +40,8 @@ export class SocketServer {
   private redisSubClient: Redis | null = null;
   private eventSubClient: Redis | null = null;
   private isShuttingDown = false;
+  private isDistributed = false;
+  private readonly instanceId = crypto.randomUUID();
 
   public static readonly REDIS_EVENT_CHANNEL = 'taskflow:events:stream';
 
@@ -54,6 +56,22 @@ export class SocketServer {
 
   public getIO(): Server | null {
     return this.io;
+  }
+
+  public getInstanceId(): string {
+    return this.instanceId;
+  }
+
+  public isDistributedAdapter(): boolean {
+    return this.isDistributed;
+  }
+
+  /**
+   * Forcibly disconnects all active sockets belonging to a specific user.
+   */
+  public disconnectUser(userId: string): void {
+    if (!this.io) return;
+    this.io.in(`user:${userId}`).disconnectSockets(true);
   }
 
   /**
@@ -102,19 +120,47 @@ export class SocketServer {
 
     try {
       const redis = getRedisClient();
+      if (redis.status === 'wait') {
+        await Promise.race([
+          redis.connect(),
+          new Promise((_, reject) => setTimeout(() => reject(new Error('Redis connection timeout')), 1500)),
+        ]).catch(() => {});
+      }
+
       if (redis.status === 'ready' || redis.status === 'connect') {
         this.redisPubClient = createRedisConnection();
         this.redisSubClient = createRedisConnection();
 
         await Promise.all([this.redisPubClient.connect(), this.redisSubClient.connect()]);
 
+        // Wrap subClient unsubscription promises to prevent unhandled rejections during teardown
+        const origPunsub = this.redisSubClient.punsubscribe.bind(this.redisSubClient);
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        (this.redisSubClient as any).punsubscribe = (...args: unknown[]) => {
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          const p = (origPunsub as any)(...args);
+          if (p && typeof p.catch === 'function') p.catch(() => {});
+          return p;
+        };
+        const origUnsub = this.redisSubClient.unsubscribe.bind(this.redisSubClient);
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        (this.redisSubClient as any).unsubscribe = (...args: unknown[]) => {
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          const p = (origUnsub as any)(...args);
+          if (p && typeof p.catch === 'function') p.catch(() => {});
+          return p;
+        };
+
         this.io.adapter(createAdapter(this.redisPubClient, this.redisSubClient));
-        logger.info('Socket.io Redis adapter successfully configured');
+        this.isDistributed = true;
+        logger.info('Socket.io Redis adapter successfully configured (Distributed Cluster Mode)');
       } else {
-        logger.info('Redis is not in ready state; Socket.io running with in-memory adapter.');
+        this.isDistributed = false;
+        logger.info('Redis is not in ready state; Socket.io running with in-memory adapter (Degraded Single-Node Mode).');
       }
     } catch (err) {
-      logger.warn('Failed to initialize Socket.io Redis adapter. Operating in memory-only mode:', err);
+      this.isDistributed = false;
+      logger.warn('Failed to initialize Socket.io Redis adapter. Operating in memory-only mode (Degraded Single-Node Mode):', err);
     }
   }
 
@@ -125,6 +171,13 @@ export class SocketServer {
   private async setupCrossProcessEventSubscriber(): Promise<void> {
     try {
       const redis = getRedisClient();
+      if (redis.status === 'wait') {
+        await Promise.race([
+          redis.connect(),
+          new Promise((_, reject) => setTimeout(() => reject(new Error('Redis connection timeout')), 1500)),
+        ]).catch(() => {});
+      }
+
       if (redis.status === 'ready' || redis.status === 'connect') {
         this.eventSubClient = createRedisConnection();
         await this.eventSubClient.connect();
@@ -135,12 +188,18 @@ export class SocketServer {
           if (!this.io || this.isShuttingDown) return;
           try {
             const parsed = JSON.parse(message);
-            const { rooms, eventType, envelope } = parsed;
+            const { originId, rooms, eventType, envelope } = parsed;
 
+            // Self-echo suppression: Ignore messages published by this instance
+            if (originId && originId === this.instanceId) {
+              return;
+            }
+
+            // Dispatch to local clients without re-broadcasting through Redis adapter
             if (rooms && Array.isArray(rooms) && rooms.length > 0) {
-              this.io.to(rooms).emit(eventType, envelope);
+              this.io.local.to(rooms).emit(eventType, envelope);
             } else {
-              this.io.emit(eventType, envelope);
+              this.io.local.emit(eventType, envelope);
             }
           } catch (parseErr) {
             logger.warn('Failed to parse cross-process Redis event message:', parseErr);
@@ -409,27 +468,9 @@ export class SocketServer {
    */
   public async close(): Promise<void> {
     this.isShuttingDown = true;
+    this.isDistributed = false;
 
-    if (this.eventSubClient) {
-      try {
-        await this.eventSubClient.unsubscribe();
-        await this.eventSubClient.quit();
-      } catch (err) {
-        logger.warn('Error closing event subscriber client:', err);
-      }
-      this.eventSubClient = null;
-    }
-
-    if (this.redisPubClient && this.redisSubClient) {
-      try {
-        await Promise.all([this.redisPubClient.quit(), this.redisSubClient.quit()]);
-      } catch (err) {
-        logger.warn('Error closing Redis adapter clients:', err);
-      }
-      this.redisPubClient = null;
-      this.redisSubClient = null;
-    }
-
+    // 1. Close Socket.io server first so that adapters can cleanly unhook while Redis is open
     if (this.io) {
       await new Promise<void>((resolve) => {
         this.io!.close(() => {
@@ -438,6 +479,24 @@ export class SocketServer {
         });
       });
       this.io = null;
+      // Allow in-flight adapter unsubscribe messages to flush
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+
+    // 2. Disconnect cross-process event subscriber
+    if (this.eventSubClient) {
+      this.eventSubClient.disconnect();
+      this.eventSubClient = null;
+    }
+
+    // 3. Disconnect Redis adapter pub/sub clients
+    if (this.redisPubClient) {
+      this.redisPubClient.disconnect();
+      this.redisPubClient = null;
+    }
+    if (this.redisSubClient) {
+      this.redisSubClient.disconnect();
+      this.redisSubClient = null;
     }
   }
 }

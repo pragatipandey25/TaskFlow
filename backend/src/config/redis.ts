@@ -14,6 +14,9 @@ export function getRedisClient(): Redis {
       enableReadyCheck: false,
       lazyConnect: true,
       retryStrategy(times) {
+        if (env.NODE_ENV === 'test' && times > 2) {
+          return null;
+        }
         const delay = Math.min(times * 200, 3000);
         logger.warn(`Redis connection retry attempt ${times} in ${delay}ms`);
         return delay;
@@ -92,7 +95,7 @@ export function createRedisConnection(): Redis {
 
 export async function disconnectRedis(): Promise<void> {
   if (redisClient) {
-    await redisClient.quit();
+    await redisClient.quit().catch(() => {});
     redisClient = null;
     logger.info('Redis client disconnected gracefully');
   }
