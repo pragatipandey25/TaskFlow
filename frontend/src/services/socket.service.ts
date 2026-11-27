@@ -57,7 +57,9 @@ export class SocketService {
       this.socket.disconnect();
     }
 
-    const socketUrl = import.meta.env.VITE_SOCKET_URL || window.location.origin;
+    const socketUrl =
+      (typeof import.meta !== 'undefined' && import.meta.env?.VITE_SOCKET_URL) ||
+      (typeof window !== 'undefined' ? window.location.origin : 'http://localhost:5000');
 
     this.socket = io(socketUrl, {
       auth: { token },

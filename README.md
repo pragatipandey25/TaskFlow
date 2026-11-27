@@ -238,9 +238,10 @@ npm run dev --workspace=@taskflow/frontend
 
 ### Running Test Suites & Quality Verification
 ```bash
-# Run complete automated test suite (Shared + Backend)
+# Run complete automated test suite across monorepo workspaces
 npm test --workspace=@taskflow/shared
 npm test --workspace=@taskflow/backend
+npm test --workspace=@taskflow/frontend
 
 # Run strict TypeScript typechecking across all 3 workspaces
 npm run typecheck

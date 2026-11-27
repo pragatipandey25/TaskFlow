@@ -203,9 +203,9 @@ Develop a modern, high-density developer dashboard in React 18, Vite, TypeScript
 - Build WebSocket integration: `SocketContext` and custom `useSocketEvent` hook for live reactive state updates.
 
 ### 7.3 Acceptance Criteria
-- [ ] Dashboard displays live status updates without requiring manual browser refresh.
-- [ ] Job filtering by status, queue, and full-text search works with debounced inputs.
-- [ ] Interactive Recharts components render responsive throughput and latency charts.
+- [x] Dashboard displays live status updates without requiring manual browser refresh.
+- [x] Job filtering by status, queue, and full-text search works with debounced inputs.
+- [x] Interactive Recharts components render responsive throughput and latency charts.
 
 ---
 

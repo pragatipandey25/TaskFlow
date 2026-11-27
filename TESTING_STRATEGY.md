@@ -103,6 +103,21 @@ flowchart BT
   - Start Worker 2.
   - Assert Worker 2 stalled-job watchdog identifies abandoned lock, re-queues job, and completes execution successfully.
 
+### 3.8 Frontend SPA Test Suite (`frontend/src/__tests__`)
+- **Authentication & RBAC Entitlements (`auth-rbac.spec.ts`)**:
+  - In-memory JWT access token storage and header attachment.
+  - Role-based entitlements matrix for Viewer, Developer, and Admin.
+  - Route guard enforcement and session cleanup.
+- **Job API Service & DLQ Client (`job-service-dlq.spec.ts`)**:
+  - Idempotency key header propagation on job submission.
+  - Pagination, search, status, and sorting query parameter serialization.
+  - Job retry, cancellation, single DLQ redrive, and bulk DLQ redrive API contracts.
+  - Dead-letter queue statistics calculation and queue breakdown mapping.
+- **Socket Real-Time Lifecycle (`socket-realtime.spec.ts`)**:
+  - Singleton client instance guarantee and connection status tracking.
+  - Reactive status change listener registration and cleanup.
+  - Safe room subscriptions and unsubscriptions (`subscribeJob`, `subscribeQueue`).
+
 ---
 
 ## 4. Test Execution Commands & CI Pipeline Matrix
@@ -113,6 +128,9 @@ npm test --workspace=@taskflow/shared
 
 # Run backend unit, integration, and security test suites
 npm test --workspace=@taskflow/backend
+
+# Run frontend SPA test suite
+npm test --workspace=@taskflow/frontend
 
 # Run strict TypeScript typecheck
 npm run typecheck

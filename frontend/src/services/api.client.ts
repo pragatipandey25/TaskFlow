@@ -1,6 +1,7 @@
 import axios from 'axios';
 
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || '/api';
+const API_BASE_URL =
+  (typeof import.meta !== 'undefined' && import.meta.env?.VITE_API_BASE_URL) || '/api';
 
 export const apiClient = axios.create({
   baseURL: API_BASE_URL,
@@ -12,14 +13,17 @@ export const apiClient = axios.create({
 });
 
 // In-memory access token storage
-let currentAccessToken: string | null = localStorage.getItem('tf_access_token');
+let currentAccessToken: string | null =
+  typeof localStorage !== 'undefined' ? localStorage.getItem('tf_access_token') : null;
 
 export function setApiAccessToken(token: string | null): void {
   currentAccessToken = token;
-  if (token) {
-    localStorage.setItem('tf_access_token', token);
-  } else {
-    localStorage.removeItem('tf_access_token');
+  if (typeof localStorage !== 'undefined') {
+    if (token) {
+      localStorage.setItem('tf_access_token', token);
+    } else {
+      localStorage.removeItem('tf_access_token');
+    }
   }
 }
 

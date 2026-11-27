@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { JobRecord, jobApiService } from '../../services/job.service';
-import { JobStatus } from '@taskflow/shared';
+import { JobStatus, UserRole } from '@taskflow/shared';
+import { useAuth } from '../../context/AuthContext';
 import { useJobEvents } from '../../hooks/useJobEvents';
 import {
   X,
@@ -123,15 +124,20 @@ export const JobDetailModal: React.FC<JobDetailModalProps> = ({
     return { label: `P${priority} Low`, color: 'text-slate-400' };
   };
 
-  const canCancel = [
-    JobStatus.PENDING,
-    JobStatus.QUEUED,
-    JobStatus.DELAYED,
-    JobStatus.PROCESSING,
-    JobStatus.RETRYING,
-  ].includes(job.status);
+  const { user } = useAuth();
+  const isViewer = user?.role === UserRole.VIEWER;
 
-  const canRetry = [JobStatus.FAILED, JobStatus.DEAD_LETTER].includes(job.status);
+  const canCancel =
+    !isViewer &&
+    [
+      JobStatus.PENDING,
+      JobStatus.QUEUED,
+      JobStatus.DELAYED,
+      JobStatus.PROCESSING,
+      JobStatus.RETRYING,
+    ].includes(job.status);
+
+  const canRetry = !isViewer && [JobStatus.FAILED, JobStatus.DEAD_LETTER].includes(job.status);
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-sm animate-in fade-in duration-200">
